@@ -112,9 +112,12 @@ static func access_graph_labels(part: Partition, allowed: Dictionary) -> Diction
 static func dists_from_labels(part: Partition, start_idx: int, allowed: Dictionary) -> PackedFloat64Array:
 	var G := access_graph_labels(part, allowed)
 	var N := part.rooms.size()
-	var dist := PackedFloat64Array(); dist.resize(N)
-        for k in range(N): dist[k] = INF
-	if start_idx < 0 or start_idx >= N: return dist
+	var dist := PackedFloat64Array()
+	dist.resize(N)
+	for k in range(N):
+		dist[k] = INF
+	if start_idx < 0 or start_idx >= N:
+		return dist
 	dist[start_idx] = 0.0
 	var q: Array[int] = [start_idx]
 	while not q.is_empty():
