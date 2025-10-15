@@ -696,12 +696,12 @@ func _metrics_for(part: Partition) -> Dictionary:
 	plan_cost.allowed_label_pairs = _allowed_label_pairs()
 	var terms := _program_terms()
 	var entry_idx := _entry_room_index_for(part)
-	var access := plan_cost.C_access(part, entry_idx, terms)
-	var dims := plan_cost.C_dims(part)
-	var shape := plan_cost.C_shape(part)
-	var exposure := plan_cost.C_exposure(part, terms)
-	var overlap := plan_cost.C_overlap(part)
-	var total := plan_cost.total(part, entry_idx, terms)
+	var access: float = plan_cost.C_access(part, entry_idx, terms)
+	var dims: float = plan_cost.C_dims(part)
+	var shape: float = plan_cost.C_shape(part)
+	var exposure: float = plan_cost.C_exposure(part, terms)
+	var overlap: float = plan_cost.C_overlap(part)
+	var total: float = plan_cost.total(part, entry_idx, terms)
 	return {
 		"access": access,
 		"dims": dims,
