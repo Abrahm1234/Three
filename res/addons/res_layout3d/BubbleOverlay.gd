@@ -26,6 +26,14 @@ static func _privacy_color(pr: int) -> Color:
 		_:
 			return Color.hex(0xe04f5aff)
 
+static func _default_privacy(label: String) -> int:
+	var s := label.to_lower()
+	if s in ["foyer", "entry", "living", "great room", "dining", "kitchen", "family"]:
+		return ArchitecturalProgram.Privacy.PUBLIC
+	if s in ["hall", "corridor", "study", "office", "laundry", "mudroom", "loft"]:
+		return ArchitecturalProgram.Privacy.SEMI
+	return ArchitecturalProgram.Privacy.PRIVATE
+
 func update_display(program: ArchitecturalProgram, state: Dictionary) -> void:
 	if state == null:
 		state = {}
@@ -129,7 +137,7 @@ func _draw_bubble() -> void:
 		var view_rect := _to_view(room_rect)
 		var base_col := Color(0.3, 0.6, 0.9, 1.0)
 		if show_privacy:
-			base_col = _privacy_color(int(room_dict.get("privacy", ArchitecturalProgram.default_privacy(String(room_dict.get("type", id))))))
+			base_col = _privacy_color(int(room_dict.get("privacy", _default_privacy(String(room_dict.get("type", id))))))
 		var fill_col := base_col
 		fill_col.a = 0.55
 		draw_rect(view_rect, fill_col, true)
