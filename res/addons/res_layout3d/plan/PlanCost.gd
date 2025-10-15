@@ -5,23 +5,64 @@ const Doors := preload("res://addons/res_layout3d/plan/Doors.gd")
 const Partition := preload("res://addons/res_layout3d/partition/Partition.gd")
 
 @export var k_access: float = 1.0
+@export var k_privacy: float = 1.0
 @export var k_dims: float = 1.0
 @export var k_shape: float = 1.0
 @export var k_expose: float = 1.0
 @export var k_floors: float = 100.0
 
+# Privacy thresholds (hop counts from entry)
+const PRIV_PUBLIC_MAX := 2
+const PRIV_SEMI_MIN := 2
+const PRIV_PRIVATE_MIN := 4
+const W_PRIV_PUB := 5.0
+const W_PRIV_SEMI := 2.5
+const W_PRIV_PRI := 6.0
+
 # Set by Planner3D before scoring
-var allowed_pairs: Array[Vector2i] = []   # room index pairs that must connect (door or open)
+var allowed_pairs: Array[Vector2i] = []  # room index pairs that must connect (door or open)
 var allowed_label_pairs: Dictionary = {}  # optional label pairs
 
 func total(part: Partition, entry_idx: int = 0, terms: Dictionary = {}) -> float:
 	return (
 		k_access * C_access(part, entry_idx, terms)
+		+ k_privacy * C_privacy(part, entry_idx)
 		+ k_dims * C_dims(part)
 		+ k_shape * C_shape(part)
 		+ k_expose * C_exposure(part, terms)
 		+ k_floors * C_overlap(part)
 	)
+
+static func _default_privacy(label: String) -> int:
+	var s := label.to_lower()
+	if s in ["foyer", "entry", "living", "great room", "dining", "kitchen", "family"]:
+		return 0
+	if s in ["hall", "corridor", "study", "office", "laundry", "mudroom", "loft"]:
+		return 1
+	return 2
+
+static func _rect_poly(r: Rect2) -> PackedVector2Array:
+	return PackedVector2Array([
+		r.position,
+		Vector2(r.position.x + r.size.x, r.position.y),
+		r.position + r.size,
+		Vector2(r.position.x, r.position.y + r.size.y),
+	])
+
+static func _area(poly: PackedVector2Array) -> float:
+	var s := 0.0
+	for i in poly.size():
+		var j := (i + 1) % poly.size()
+		s += poly[i].x * poly[j].y - poly[j].x * poly[i].y
+	return abs(s) * 0.5
+
+static func _concavity(poly: PackedVector2Array) -> float:
+	var hull := Geometry2D.convex_hull(poly)
+	var a := _area(poly)
+	var ah := _area(hull)
+	if a <= 0.0 or ah <= 0.0:
+		return 0.0
+	return clamp((ah - a) / ah, 0.0, 1.0)
 
 # --- Access: penalize required pairs that lack a viable span for a door/opening
 func C_access(part: Partition, entry_idx: int, terms: Dictionary) -> float:
@@ -45,9 +86,39 @@ func C_access(part: Partition, entry_idx: int, terms: Dictionary) -> float:
 func C_dims(part: Partition) -> float:
 	return 0.0
 
-# --- Shape: placeholder (concavity later)
+# --- Privacy gradient: rooms must be appropriately remote from entry
+func C_privacy(part: Partition, entry_idx: int) -> float:
+	if part == null or part.rooms.is_empty():
+		return 0.0
+	var dist := Doors.dists_from(part, entry_idx)
+	var cost := 0.0
+	for i in range(part.rooms.size()):
+		var room := part.rooms[i]
+		var hop_f := dist[i] if i < dist.size() else INF
+		var hop := 1_000_000 if hop_f == INF else int(hop_f)
+		match _default_privacy(room.label):
+			0:
+				if hop > PRIV_PUBLIC_MAX:
+					cost += W_PRIV_PUB * float(hop - PRIV_PUBLIC_MAX)
+			1:
+				if hop < PRIV_SEMI_MIN:
+					cost += W_PRIV_SEMI * float(PRIV_SEMI_MIN - hop)
+			2:
+				if hop < PRIV_PRIVATE_MIN:
+					cost += W_PRIV_PRI * float(PRIV_PRIVATE_MIN - hop)
+	return cost
+
+# --- Shape: convexity penalty (skips circulation/stairs)
 func C_shape(part: Partition) -> float:
-	return 0.0
+	if part == null:
+		return 0.0
+	var total := 0.0
+	for room in part.rooms:
+		var label := room.label.to_lower()
+		if label.find("hall") != -1 or label.find("stair") != -1:
+			continue
+		total += _concavity(_rect_poly(room.rect))
+	return total
 
 # --- Exposure: rooms that require exterior contact but don’t meet it
 func C_exposure(part: Partition, terms: Dictionary) -> float:
@@ -65,7 +136,6 @@ func C_exposure(part: Partition, terms: Dictionary) -> float:
 		var rect := r.rect
 		var rect_end := rect.position + rect.size
 		var ext_len := 0.0
-		# contact length with exterior
 		if is_equal_approx(rect.position.x, fp.position.x):
 			ext_len += rect.size.y
 		if is_equal_approx(rect_end.x, fp_end.x):

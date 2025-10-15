@@ -690,13 +690,22 @@ func _metrics_for(part: Partition) -> Dictionary:
 		if plan_cost != null:
 			var empty_pairs: Array[Vector2i] = []
 			plan_cost.allowed_pairs = empty_pairs
-		return {"access": 0.0, "dims": 0.0, "shape": 0.0, "exposure": 0.0, "overlap": 0.0, "total": 0.0}
+		return {
+			"access": 0.0,
+			"privacy": 0.0,
+			"dims": 0.0,
+			"shape": 0.0,
+			"exposure": 0.0,
+			"overlap": 0.0,
+			"total": 0.0,
+		}
 	var pairs := _allowed_idx_pairs(part)
 	plan_cost.allowed_pairs = pairs
 	plan_cost.allowed_label_pairs = _allowed_label_pairs()
 	var terms := _program_terms()
 	var entry_idx := _entry_room_index_for(part)
 	var access: float = plan_cost.C_access(part, entry_idx, terms)
+	var privacy: float = plan_cost.C_privacy(part, entry_idx)
 	var dims: float = plan_cost.C_dims(part)
 	var shape: float = plan_cost.C_shape(part)
 	var exposure: float = plan_cost.C_exposure(part, terms)
@@ -704,6 +713,7 @@ func _metrics_for(part: Partition) -> Dictionary:
 	var total: float = plan_cost.total(part, entry_idx, terms)
 	return {
 		"access": access,
+		"privacy": privacy,
 		"dims": dims,
 		"shape": shape,
 		"exposure": exposure,
@@ -1060,15 +1070,16 @@ func _add_simple_hip_roof_rect(rect: Rect2, height: float) -> void:
 func _apply_weights() -> void:
 	if plan_cost == null:
 		return
-	
+
 	plan_cost.k_access = float(w_access.value)
 	plan_cost.k_dims = float(w_dims.value)
 	plan_cost.k_shape = float(w_shape.value)
 	plan_cost.k_expose = float(w_exposure.value)
 	plan_cost.k_floors = float(w_floors.value)
-	
-	print("✓ Weights: k_access=%.1f k_dims=%.1f k_shape=%.1f k_expose=%.1f k_floors=%.0f" % [
+
+	print("✓ Weights: k_access=%.1f k_privacy=%.1f k_dims=%.1f k_shape=%.1f k_expose=%.1f k_floors=%.0f" % [
 		plan_cost.k_access,
+		plan_cost.k_privacy,
 		plan_cost.k_dims,
 		plan_cost.k_shape,
 		plan_cost.k_expose,
@@ -1103,28 +1114,36 @@ func _rescale_ui() -> void:
 func _update_cost_ui() -> void:
 	if cost_tree == null or partition == null:
 		return
-	
+
 	cost_tree.clear()
 	var root := cost_tree.create_item()
-	
+
 	var metrics := _metrics_for(partition)
-	
+
 	var access_item := cost_tree.create_item(root)
 	access_item.set_text(0, "Access")
 	access_item.set_text(1, "%.2f" % metrics.get("access", 0.0))
-	
+
+	var privacy_item := cost_tree.create_item(root)
+	privacy_item.set_text(0, "Privacy")
+	privacy_item.set_text(1, "%.2f" % metrics.get("privacy", 0.0))
+
 	var dims_item := cost_tree.create_item(root)
 	dims_item.set_text(0, "Dimensions")
 	dims_item.set_text(1, "%.2f" % metrics.get("dims", 0.0))
-	
+
 	var shape_item := cost_tree.create_item(root)
 	shape_item.set_text(0, "Shape")
 	shape_item.set_text(1, "%.2f" % metrics.get("shape", 0.0))
-	
+
 	var exposure_item := cost_tree.create_item(root)
 	exposure_item.set_text(0, "Exposure")
 	exposure_item.set_text(1, "%.2f" % metrics.get("exposure", 0.0))
-	
+
+	var overlap_item := cost_tree.create_item(root)
+	overlap_item.set_text(0, "Overlap")
+	overlap_item.set_text(1, "%.2f" % metrics.get("overlap", 0.0))
+
 	var total_item := cost_tree.create_item(root)
 	total_item.set_text(0, "TOTAL")
 	total_item.set_text(1, "%.2f" % metrics.get("total", 0.0))
