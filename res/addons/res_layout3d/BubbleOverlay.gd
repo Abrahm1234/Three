@@ -49,7 +49,7 @@ func update_display(program: ArchitecturalProgram, state: Dictionary) -> void:
 	var state_rooms: Dictionary = state.get("rooms", {})
 	var has_rect := false
 	for key in state_rooms.keys():
-		var rd := state_rooms[key]
+		var rd = state_rooms[key]
 		if rd is Dictionary and rd.has("rect"):
 			has_rect = true
 			break
@@ -115,7 +115,7 @@ func _draw_bubble() -> void:
 	var view_size: Vector2 = get_size()
 	var available := Vector2(max(view_size.x - padding * 2.0, 1.0), max(view_size.y - padding * 2.0, 1.0))
 	var scale := min(available.x / max(base_rect.size.x, 0.001), available.y / max(base_rect.size.y, 0.001))
-	var offset := (view_size - base_rect.size * scale) * 0.5 - base_rect.position * scale
+	var offset: Vector2 = (view_size - base_rect.size * scale) * 0.5 - base_rect.position * scale
 	_view_scale = scale
 	_view_offset = offset
 
@@ -130,7 +130,9 @@ func _draw_bubble() -> void:
 		var base_col := Color(0.3, 0.6, 0.9, 1.0)
 		if show_privacy:
 			base_col = _privacy_color(int(room_dict.get("privacy", ArchitecturalProgram.default_privacy(String(room_dict.get("type", id))))))
-		draw_rect(view_rect, base_col.with_alpha(0.55), true)
+		var fill_col := base_col
+		fill_col.a = 0.55
+		draw_rect(view_rect, fill_col, true)
 		draw_rect(view_rect, base_col.darkened(0.25), false, 2.0)
 		if show_labels:
 			var label := String(room_dict.get("type", id))
