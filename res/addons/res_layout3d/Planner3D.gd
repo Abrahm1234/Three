@@ -247,7 +247,7 @@ const BubbleOverlay := preload("res://addons/res_layout3d/BubbleOverlay.gd")
 @onready var adj_list: ItemList = $"UI/Root/Panel/VBox/AdjList"
 @onready var beta: SpinBox = $"UI/Root/Panel/VBox/Bottom/Beta"
 @onready var iters: SpinBox = $"UI/Root/Panel/VBox/Bottom/Iters"
-@onready var bubble_ui: BubbleOverlay = has_node("%BubbleOverlay") ? $"%BubbleOverlay" : null
+@onready var bubble_ui: BubbleOverlay = $"%BubbleOverlay" if has_node("%BubbleOverlay") else null
 
 @export_enum("Bubble","Schematic","Detailed") var view_stage := "Bubble"
 @export var use_bn: bool = true
@@ -361,11 +361,11 @@ func _unhandled_input(e: InputEvent) -> void:
 		set_stage("Detailed")
 	elif e.is_action_pressed("ui_floor_prev"):
 		if bubble_ui and program:
-			var next_floor := max(0, (bubble_ui != null ? bubble_ui.current_floor : 0) - 1)
+			var next_floor := max(0, (bubble_ui.current_floor if bubble_ui != null else 0) - 1)
 			show_bubble_for(program, next_floor)
 	elif e.is_action_pressed("ui_floor_next"):
 		if bubble_ui and program:
-			var next_floor := (bubble_ui != null ? bubble_ui.current_floor : 0) + 1
+			var next_floor := (bubble_ui.current_floor if bubble_ui != null else 0) + 1
 			show_bubble_for(program, next_floor)
 	elif e.is_action_pressed("toggle_roof"):
 		roof_chk.button_pressed = not roof_chk.button_pressed
@@ -443,7 +443,7 @@ func _door_key(a_id: String, b_id: String) -> String:
 	return _unordered_key(a_id, b_id)
 
 func _unordered_key(a: String, b: String) -> String:
-	return _id_less(a, b) ? "%s|%s" % [a, b] : "%s|%s" % [b, a]
+	return "%s|%s" % [a, b] if _id_less(a, b) else "%s|%s" % [b, a]
 
 func _id_less(a: String, b: String) -> bool:
 	if a.is_valid_int() and b.is_valid_int():
@@ -508,7 +508,7 @@ func _doors_from_partition_array(part: Partition) -> Array[Dictionary]:
 			out.append({"axis": axis, "c": c, "span": Vector2(a, b), "type": "open"})
 		else:
 			var mid := 0.5 * (a + b)
-			var half := ((program != null ? program.default_door_w : 0.9) * 0.5)
+			var half := ((program.default_door_w if program != null else 0.9) * 0.5)
 			out.append({"axis": axis, "c": c, "span": Vector2(mid - half, mid + half), "type": "door"})
 	return out
 
@@ -544,11 +544,11 @@ func _doors_from_partition(part: Partition) -> Dictionary:
 				continue
 			
 			var typ := String(types.get(key, "door"))
-			var clearance := program != null ? program.door_clear : 0.1
-			var door_w := program != null ? program.default_door_w : 0.9
-			
+			var clearance := program.door_clear if program != null else 0.1
+			var door_w := program.default_door_w if program != null else 0.9
+
 			var corner_bias := 0.2
-			var t := randf() < 0.5 ? corner_bias : (1.0 - corner_bias)
+			var t := corner_bias if randf() < 0.5 else (1.0 - corner_bias)
 			
 			if typ == "open":
 				door_w = max(0.0, L - 2.0 * clearance)
@@ -614,7 +614,7 @@ func _update_state_from_partition() -> void:
 	_update_cost_ui()
 	if is_instance_valid(overlay):
 		if view_stage == "Bubble" and program != null:
-			var floor_idx := bubble_ui != null ? bubble_ui.current_floor : 0
+			var floor_idx := bubble_ui.current_floor if bubble_ui != null else 0
 			show_bubble_for(program, floor_idx)
 		else:
 			overlay.update_display(program, state)
@@ -782,7 +782,7 @@ func _display_batch_results(results: Array) -> void:
 	batch_header.text = "Batch Results (%d)" % results.size()
 	for result in results:
 		var part: Partition = result.get("partition")
-		var snapshot: Dictionary = result.get("state", part != null ? part.to_state_rects() : {})
+		var snapshot: Dictionary = result.get("state", part.to_state_rects() if part != null else {})
 		var metrics: Dictionary = result.get("metrics", {})
 		var tex := await _state_to_texture(snapshot)
 		var preview := TextureRect.new()
@@ -883,7 +883,7 @@ func optimize_with_restarts(restart_count: int, steps: int) -> Dictionary:
 	
 	return {
 		"partition": best_partition,
-		"state": best_partition != null ? _state_from_partition(best_partition) : {},
+		"state": _state_from_partition(best_partition) if best_partition != null else {},
 		"metrics": best_metrics
 	}
 
@@ -913,7 +913,7 @@ func _rebuild_meshes() -> void:
 
 	if is_instance_valid(overlay):
 		if view_stage == "Bubble" and program != null:
-			var floor_idx := bubble_ui != null ? bubble_ui.current_floor : 0
+			var floor_idx := bubble_ui.current_floor if bubble_ui != null else 0
 			show_bubble_for(program, floor_idx)
 		else:
 			overlay.update_display(program, state)
