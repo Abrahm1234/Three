@@ -212,7 +212,7 @@ const PartitionIO := preload("res://addons/res_layout3d/partition/PartitionIO.gd
 const Partition := preload("res://addons/res_layout3d/partition/Partition.gd")
 const Doors := preload("res://addons/res_layout3d/plan/Doors.gd")
 const PlanCost := preload("res://addons/res_layout3d/plan/PlanCost.gd")
-const PlanOptimize := preload("res://addons/res_layout3d/plan/PlanOptimize.gd")
+const Annealer := preload("res://addons/res_layout3d/opt/Annealer.gd")
 const BubbleOverlay := preload("res://addons/res_layout3d/BubbleOverlay.gd")
 
 @onready var rooms_root: Node3D = $"Rooms"
@@ -267,6 +267,12 @@ var roof_root: Node3D
 
 const WALL_H := 3.0
 func _ready() -> void:
+	_bind_key("ui_stage_bubble", KEY_1)
+	_bind_key("ui_stage_schematic", KEY_2)
+	_bind_key("ui_stage_detailed", KEY_3)
+	_bind_key("ui_floor_prev", KEY_PAGEUP)
+	_bind_key("ui_floor_next", KEY_PAGEDOWN)
+	_bind_key("toggle_roof", KEY_R)
 	new_btn.pressed.connect(_new_program)
 	sample_btn.pressed.connect(_sample_program)
 	opt_btn.pressed.connect(_optimize_once)
@@ -278,7 +284,7 @@ func _ready() -> void:
 	save_plan_btn.pressed.connect(func(): save_plan())
 	load_plan_btn.pressed.connect(func(): load_plan())
 	add_child(R)
-	
+
 	R.reseed(Time.get_ticks_msec())
 	print("✓ RNG seeded with: %d" % Time.get_ticks_msec())
 	
@@ -315,7 +321,6 @@ func _ready() -> void:
 		if overlay: overlay.visible = pressed and view_stage == "Bubble"
 	)
 	overlay.visible = overlay_chk.button_pressed and view_stage == "Bubble"
-	_setup_roof_input()
 	_ensure_roof_root()
 	roof_chk.toggled.connect(func(on: bool):
 		if is_instance_valid(roof_root):
@@ -344,29 +349,33 @@ func _ensure_roof_root() -> void:
 		roof_root.name = "Roof"
 		rooms_root.add_child(roof_root)
 
-func _setup_roof_input() -> void:
-	if not InputMap.has_action("toggle_roof"):
-		InputMap.add_action("toggle_roof")
-		var ev: InputEventKey = InputEventKey.new()
-		ev.physical_keycode = KEY_H
-		InputMap.action_add_event("toggle_roof", ev)
+func _bind_key(action: StringName, keycode: int) -> void:
+	if not InputMap.has_action(action):
+		InputMap.add_action(action)
+	var events := InputMap.action_get_events(action)
+	for existing in events:
+		if existing is InputEventKey and existing.physical_keycode == keycode:
+			return
+	var ev := InputEventKey.new()
+	ev.physical_keycode = keycode
+	InputMap.action_add_event(action, ev)
 
 func _unhandled_input(e: InputEvent) -> void:
-	if e.is_action_pressed("ui_stage_bubble"):
+	if InputMap.has_action("ui_stage_bubble") and e.is_action_pressed("ui_stage_bubble"):
 		set_stage("Bubble")
-	elif e.is_action_pressed("ui_stage_schematic"):
+	elif InputMap.has_action("ui_stage_schematic") and e.is_action_pressed("ui_stage_schematic"):
 		set_stage("Schematic")
-	elif e.is_action_pressed("ui_stage_detailed"):
+	elif InputMap.has_action("ui_stage_detailed") and e.is_action_pressed("ui_stage_detailed"):
 		set_stage("Detailed")
-	elif e.is_action_pressed("ui_floor_prev"):
+	elif InputMap.has_action("ui_floor_prev") and e.is_action_pressed("ui_floor_prev"):
 		if bubble_ui and program:
 			var next_floor := max(0, (bubble_ui.current_floor if bubble_ui != null else 0) - 1)
 			show_bubble_for(program, next_floor)
-	elif e.is_action_pressed("ui_floor_next"):
+	elif InputMap.has_action("ui_floor_next") and e.is_action_pressed("ui_floor_next"):
 		if bubble_ui and program:
 			var next_floor := (bubble_ui.current_floor if bubble_ui != null else 0) + 1
 			show_bubble_for(program, next_floor)
-	elif e.is_action_pressed("toggle_roof"):
+	elif InputMap.has_action("toggle_roof") and e.is_action_pressed("toggle_roof"):
 		roof_chk.button_pressed = not roof_chk.button_pressed
 
 func _new_program() -> void:
@@ -737,17 +746,21 @@ func _copy_partition(src: Partition) -> Partition:
 	return copy
 
 func _optimize_partition(iterations: int, source: Partition) -> Partition:
-	var starting := _copy_partition(source)
-	if starting == null:
+	var working := _copy_partition(source)
+	if working == null:
 		return null
-	var optimizer := PlanOptimize.new()
-	optimizer.iters = max(1, iterations)
-	optimizer.temp0 = max(0.01, float(beta.value))
-	optimizer.allowed_pairs = _allowed_idx_pairs(starting)
-	optimizer.allowed_label_pairs = _allowed_label_pairs()
+	var steps := max(1, iterations)
+	var entry_idx := _entry_room_index_for(working)
 	var terms := _program_terms()
-	var entry_idx := _entry_room_index_for(starting)
-	return optimizer.optimize(starting, entry_idx, terms)
+	plan_cost.allowed_pairs = _allowed_idx_pairs(working)
+	plan_cost.allowed_label_pairs = _allowed_label_pairs()
+	var annealer := Annealer.new()
+	annealer.iters = steps
+	annealer.t0 = max(0.01, float(beta.value))
+	var decay := pow(0.01, 1.0 / max(1.0, float(steps)))
+	annealer.alpha = clamp(decay, 0.90, 0.999)
+	annealer.run(working, plan_cost, entry_idx, terms)
+	return working
 
 func _compare_results(a: Dictionary, b: Dictionary) -> bool:
 	return float(a.get("metrics", {}).get("total", INF)) < float(b.get("metrics", {}).get("total", INF))
