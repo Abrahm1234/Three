@@ -247,7 +247,9 @@ const BubbleOverlay := preload("res://addons/res_layout3d/BubbleOverlay.gd")
 @onready var adj_list: ItemList = $"UI/Root/Panel/VBox/AdjList"
 @onready var beta: SpinBox = $"UI/Root/Panel/VBox/Bottom/Beta"
 @onready var iters: SpinBox = $"UI/Root/Panel/VBox/Bottom/Iters"
+@onready var bubble_ui: BubbleOverlay = $"%BubbleOverlay" if has_node("%BubbleOverlay") else null
 
+@export_enum("Bubble","Schematic","Detailed") var view_stage := "Bubble"
 @export var use_bn: bool = true
 @export var styles: Array[HouseStyle] = []
 
@@ -310,9 +312,9 @@ func _ready() -> void:
 	overlay.z_index = -100
 	ui_root_node.add_child(overlay)
 	overlay_chk.toggled.connect(func(pressed: bool) -> void:
-		if overlay: overlay.visible = pressed
+		if overlay: overlay.visible = pressed and view_stage == "Bubble"
 	)
-	overlay.visible = overlay_chk.button_pressed
+	overlay.visible = overlay_chk.button_pressed and view_stage == "Bubble"
 	_setup_roof_input()
 	_ensure_roof_root()
 	roof_chk.toggled.connect(func(on: bool):
@@ -351,7 +353,21 @@ func _setup_roof_input() -> void:
 		InputMap.action_add_event("toggle_roof", ev)
 
 func _unhandled_input(e: InputEvent) -> void:
-	if e.is_action_pressed("toggle_roof"):
+	if e.is_action_pressed("ui_stage_bubble"):
+		set_stage("Bubble")
+	elif e.is_action_pressed("ui_stage_schematic"):
+		set_stage("Schematic")
+	elif e.is_action_pressed("ui_stage_detailed"):
+		set_stage("Detailed")
+	elif e.is_action_pressed("ui_floor_prev"):
+		if bubble_ui and program:
+			var next_floor := max(0, bubble_ui.current_floor - 1)
+			show_bubble_for(program, next_floor)
+	elif e.is_action_pressed("ui_floor_next"):
+		if bubble_ui and program:
+			var next_floor := bubble_ui.current_floor + 1
+			show_bubble_for(program, next_floor)
+	elif e.is_action_pressed("toggle_roof"):
 		roof_chk.button_pressed = not roof_chk.button_pressed
 
 func _new_program() -> void:
@@ -375,6 +391,7 @@ func _new_program() -> void:
 
 	_update_adj_list()
 	_clear_batch_results()
+	show_bubble_for(program)
 	_seed_state_from_program(program)
 	_rebuild_meshes()
 
@@ -596,7 +613,11 @@ func _update_state_from_partition() -> void:
 	state = _state_from_partition(partition)
 	_update_cost_ui()
 	if is_instance_valid(overlay):
-		overlay.update_display(program, state)
+		if view_stage == "Bubble" and program != null:
+			var floor_idx := bubble_ui.current_floor if bubble_ui != null else 0
+			show_bubble_for(program, floor_idx)
+		else:
+			overlay.update_display(program, state)
 
 func _program_terms() -> Dictionary:
 	var terms := {}
@@ -889,8 +910,12 @@ func _rebuild_meshes() -> void:
 	var outer: Rect2 = state.get("outer", Rect2())
 	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	print("🏠 Rebuilding meshes: rooms=%d footprint=%s" % [state.get("rooms", {}).size(), outer])
-	if is_instance_valid(overlay):
-		overlay.update_display(program, state)
+        if is_instance_valid(overlay):
+                if view_stage == "Bubble" and program != null:
+                        var floor_idx := bubble_ui.current_floor if bubble_ui != null else 0
+                        show_bubble_for(program, floor_idx)
+                else:
+                        overlay.update_display(program, state)
 	_update_cost_ui()
 	for c in rooms_root.get_children():
 		if c != roof_root:
@@ -1053,6 +1078,24 @@ func _apply_weights() -> void:
 func _ensure_overlay() -> void:
 	if overlay == null or not is_instance_valid(overlay):
 		overlay = BubbleOverlay.new()
+	if bubble_ui == null or not is_instance_valid(bubble_ui):
+		bubble_ui = overlay
+
+func set_stage(stage: String) -> void:
+	view_stage = stage
+	if bubble_ui:
+		bubble_ui.visible = overlay_chk.button_pressed and stage == "Bubble"
+	_rebuild_meshes()
+
+func show_bubble_for(program: ArchitecturalProgram, floor := 0) -> void:
+	if bubble_ui == null:
+		return
+	bubble_ui.update_display(program, {
+		"floor": floor,
+		"show_privacy": true,
+		"show_labels": true,
+		"show_edges": true
+	})
 
 func _rescale_ui() -> void:
 	pass

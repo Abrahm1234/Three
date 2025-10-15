@@ -23,6 +23,22 @@ static func access_graph(part: Partition) -> Dictionary:
 		graph[edge["b"]][edge["a"]] = 1.0
 	return graph
 
+# Treat open-wall adjacencies as passable even if no door span is cut yet.
+static func access_graph_with_program(part: Partition, program: ArchitecturalProgram) -> Array:
+	var graph := access_graph(part)
+	var idx_by_label := {}
+	for i in range(part.rooms.size()):
+		idx_by_label[part.rooms[i].label] = i
+	for e in program.edges:
+		if String(e.get("kind", "")) != "open":
+			continue
+		var a := idx_by_label.get(String(e.get("a_id", "")), -1)
+		var b := idx_by_label.get(String(e.get("b_id", "")), -1)
+		if a >= 0 and b >= 0:
+			graph[a][b] = 1.0
+			graph[b][a] = 1.0
+	return graph
+
 static func access_graph_pairs(part: Partition, pairs: Array[Vector2i]) -> Dictionary:
 	var allow := {}
 	for p in pairs:
