@@ -180,7 +180,7 @@ func _inter_area_between_floors(part: Partition, f0: int, f1: int) -> float:
 			B.append(r.rect)
 	for ra in A:
 		for rb in B:
-			var inter := ra.intersection(rb)
+			var inter: Rect2 = ra.intersection(rb)
 			if inter.size.x > 0.0 and inter.size.y > 0.0:
 				sum += inter.size.x * inter.size.y
 	return sum

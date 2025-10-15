@@ -329,8 +329,7 @@ func _ready() -> void:
 		cost_tree.set_column_titles_visible(true)
 		cost_tree.set_column_title(0, "Term")
 		cost_tree.set_column_title(1, "Value")
-	plan_cost = PlanCost.new()
-	add_child(plan_cost)
+plan_cost = PlanCost.new()
 	if styles.size() > 0:
 		style_idx = 0
 		style = styles[0]
