@@ -247,7 +247,7 @@ const BubbleOverlay := preload("res://addons/res_layout3d/BubbleOverlay.gd")
 @onready var adj_list: ItemList = $"UI/Root/Panel/VBox/AdjList"
 @onready var beta: SpinBox = $"UI/Root/Panel/VBox/Bottom/Beta"
 @onready var iters: SpinBox = $"UI/Root/Panel/VBox/Bottom/Iters"
-@onready var bubble_ui: BubbleOverlay = $"%BubbleOverlay" if has_node("%BubbleOverlay") else null
+@onready var bubble_ui: BubbleOverlay = has_node("%BubbleOverlay") ? $"%BubbleOverlay" : null
 
 @export_enum("Bubble","Schematic","Detailed") var view_stage := "Bubble"
 @export var use_bn: bool = true
@@ -361,11 +361,11 @@ func _unhandled_input(e: InputEvent) -> void:
 		set_stage("Detailed")
 	elif e.is_action_pressed("ui_floor_prev"):
 		if bubble_ui and program:
-			var next_floor := max(0, bubble_ui.current_floor - 1)
+			var next_floor := max(0, (bubble_ui != null ? bubble_ui.current_floor : 0) - 1)
 			show_bubble_for(program, next_floor)
 	elif e.is_action_pressed("ui_floor_next"):
 		if bubble_ui and program:
-			var next_floor := bubble_ui.current_floor + 1
+			var next_floor := (bubble_ui != null ? bubble_ui.current_floor : 0) + 1
 			show_bubble_for(program, next_floor)
 	elif e.is_action_pressed("toggle_roof"):
 		roof_chk.button_pressed = not roof_chk.button_pressed
@@ -431,7 +431,7 @@ func _update_adj_list() -> void:
 	adj_list.clear()
 	for e in program.edges:
 		var ed: Dictionary = e
-		adj_list.add_item("%s <-> %s (%s)" % [ed.get("a_id", ""), ed.get("b_id", ""), ed.get("type", "")])
+		adj_list.add_item("%s <-> %s (%s)" % [ed.get("a_id", ""), ed.get("b_id", ""), ed.get("kind", "")])
 
 func _seed_state_from_program(prog: ArchitecturalProgram) -> void:
 	if prog == null:
@@ -443,7 +443,7 @@ func _door_key(a_id: String, b_id: String) -> String:
 	return _unordered_key(a_id, b_id)
 
 func _unordered_key(a: String, b: String) -> String:
-	return "%s|%s" % [a, b] if _id_less(a, b) else "%s|%s" % [b, a]
+	return _id_less(a, b) ? "%s|%s" % [a, b] : "%s|%s" % [b, a]
 
 func _id_less(a: String, b: String) -> bool:
 	if a.is_valid_int() and b.is_valid_int():
@@ -466,7 +466,7 @@ func _allowed_door_types() -> Dictionary:
 	var types := {}
 	if program == null: return types
 	for e in program.edges:
-		var t := String(e.get("type","door"))
+		var t := String(e.get("kind","door"))
 		if t != "door" and t != "open": continue
 		var a := String(e.get("a_id","")); var b := String(e.get("b_id",""))
 		if a == "" or b == "": continue
@@ -491,7 +491,7 @@ func _doors_from_partition_array(part: Partition) -> Array[Dictionary]:
 	for e in program.edges:
 		var a_id := String(e.get("a_id", ""))
 		var b_id := String(e.get("b_id", ""))
-		var typ := String(e.get("type", "door"))
+		var typ := String(e.get("kind", "door"))
 		var A := _room_rect_by_id(part, a_id)
 		var B := _room_rect_by_id(part, b_id)
 		if A == Rect2() or B == Rect2(): continue
@@ -508,7 +508,7 @@ func _doors_from_partition_array(part: Partition) -> Array[Dictionary]:
 			out.append({"axis": axis, "c": c, "span": Vector2(a, b), "type": "open"})
 		else:
 			var mid := 0.5 * (a + b)
-			var half := (program.default_door_w if program != null else 0.9) * 0.5
+			var half := ((program != null ? program.default_door_w : 0.9) * 0.5)
 			out.append({"axis": axis, "c": c, "span": Vector2(mid - half, mid + half), "type": "door"})
 	return out
 
@@ -544,11 +544,11 @@ func _doors_from_partition(part: Partition) -> Dictionary:
 				continue
 			
 			var typ := String(types.get(key, "door"))
-			var clearance := program.door_clear if program != null else 0.1
-			var door_w := program.default_door_w if program != null else 0.9
+			var clearance := program != null ? program.door_clear : 0.1
+			var door_w := program != null ? program.default_door_w : 0.9
 			
 			var corner_bias := 0.2
-			var t := corner_bias if randf() < 0.5 else (1.0 - corner_bias)
+			var t := randf() < 0.5 ? corner_bias : (1.0 - corner_bias)
 			
 			if typ == "open":
 				door_w = max(0.0, L - 2.0 * clearance)
@@ -573,7 +573,7 @@ func _allowed_idx_pairs(part: Partition) -> Array[Vector2i]:
 		var prog_id := String(program.rooms[i].get("id", str(i)))
 		id_to_idx[prog_id] = i
 	for edge in program.edges:
-		var typ := String(edge.get("type", ""))
+		var typ := String(edge.get("kind", ""))
 		if typ != "door" and typ != "open":
 			continue
 		var a_id := String(edge.get("a_id", ""))
@@ -614,7 +614,7 @@ func _update_state_from_partition() -> void:
 	_update_cost_ui()
 	if is_instance_valid(overlay):
 		if view_stage == "Bubble" and program != null:
-			var floor_idx := bubble_ui.current_floor if bubble_ui != null else 0
+			var floor_idx := bubble_ui != null ? bubble_ui.current_floor : 0
 			show_bubble_for(program, floor_idx)
 		else:
 			overlay.update_display(program, state)
@@ -676,7 +676,7 @@ func _allowed_label_pairs() -> Dictionary:
 	for r in program.rooms:
 		id2label[String(r.get("id",""))] = String(r.get("type",""))
 	for e in program.edges:
-		var t := String(e.get("type",""))
+		var t := String(e.get("kind",""))
 		if t != "door" and t != "open": continue
 		var a := id2label.get(String(e.get("a_id","")), "")
 		var b := id2label.get(String(e.get("b_id","")), "")
@@ -782,7 +782,7 @@ func _display_batch_results(results: Array) -> void:
 	batch_header.text = "Batch Results (%d)" % results.size()
 	for result in results:
 		var part: Partition = result.get("partition")
-		var snapshot: Dictionary = result.get("state", part.to_state_rects() if part != null else {})
+		var snapshot: Dictionary = result.get("state", part != null ? part.to_state_rects() : {})
 		var metrics: Dictionary = result.get("metrics", {})
 		var tex := await _state_to_texture(snapshot)
 		var preview := TextureRect.new()
@@ -883,7 +883,7 @@ func optimize_with_restarts(restart_count: int, steps: int) -> Dictionary:
 	
 	return {
 		"partition": best_partition,
-		"state": _state_from_partition(best_partition) if best_partition != null else {},
+		"state": best_partition != null ? _state_from_partition(best_partition) : {},
 		"metrics": best_metrics
 	}
 
@@ -910,13 +910,16 @@ func _rebuild_meshes() -> void:
 	var outer: Rect2 = state.get("outer", Rect2())
 	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	print("🏠 Rebuilding meshes: rooms=%d footprint=%s" % [state.get("rooms", {}).size(), outer])
-        if is_instance_valid(overlay):
-                if view_stage == "Bubble" and program != null:
-                        var floor_idx := bubble_ui.current_floor if bubble_ui != null else 0
-                        show_bubble_for(program, floor_idx)
-                else:
-                        overlay.update_display(program, state)
+
+	if is_instance_valid(overlay):
+		if view_stage == "Bubble" and program != null:
+			var floor_idx := bubble_ui != null ? bubble_ui.current_floor : 0
+			show_bubble_for(program, floor_idx)
+		else:
+			overlay.update_display(program, state)
+
 	_update_cost_ui()
+
 	for c in rooms_root.get_children():
 		if c != roof_root:
 			c.queue_free()
@@ -944,20 +947,17 @@ func _rebuild_meshes() -> void:
 		var r: Dictionary = rooms_dict[id]
 		var rect: Rect2 = r["rect"]
 		var col: Color = r["color"]
-
-		var rects: Array = [rect]
-		for rr in rects:
-			var piece := MeshInstance3D.new()
-			var piece_box := BoxMesh.new()
-			piece_box.size = Vector3(rr.size.x, 0.3, rr.size.y)
-			piece.mesh = piece_box
-			piece.transform = Transform3D(Basis(), Vector3(rr.position.x + rr.size.x * 0.5, 0.15, rr.position.y + rr.size.y * 0.5))
-			var mat := StandardMaterial3D.new()
-			mat.albedo_color = col
-			mat.roughness = 0.9
-			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			piece.material_override = mat
-			rooms_root.add_child(piece)
+		var piece := MeshInstance3D.new()
+		var piece_box := BoxMesh.new()
+		piece_box.size = Vector3(rect.size.x, 0.3, rect.size.y)
+		piece.mesh = piece_box
+		piece.transform = Transform3D(Basis(), Vector3(rect.position.x + rect.size.x * 0.5, 0.15, rect.position.y + rect.size.y * 0.5))
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = col
+		mat.roughness = 0.9
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		piece.material_override = mat
+		rooms_root.add_child(piece)
 
 	if partition != null:
 		var doors := _doors_from_partition_array(partition)
@@ -990,7 +990,7 @@ func _rebuild_meshes() -> void:
 
 	if roof_chk.button_pressed:
 		_add_simple_hip_roof_rect(outer, 28.0)
-	
+
 	_debug_draw_doors()
 	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
