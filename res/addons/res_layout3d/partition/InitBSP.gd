@@ -40,23 +40,23 @@ static func build_adjacency_aware(prog: ArchitecturalProgram, step := 0.1) -> Pa
 	var start_rect := _initial_room_rect(prog, start_room, part.footprint)
 	placed[start_room["id"]] = start_rect
 	visited[start_room["id"]] = true
-	
+
 	# BFS placement
 	while not queue.is_empty():
 		var current_room: Dictionary = queue.pop_front()
 		var current_id: String = current_room["id"]
 		var current_rect: Rect2 = placed[current_id]
-		
+
 		# Get adjacent rooms
 		var neighbors := adj_graph.get(current_id, [])
-		
+
 		for neighbor_id in neighbors:
 			if visited.has(neighbor_id):
 				continue
-			
+
 			# Find the room definition
-			var neighbor_room := _find_room_by_id(prog, neighbor_id)
-			if neighbor_room == null:
+			var neighbor_room: Dictionary = _find_room_by_id(prog, neighbor_id)
+			if neighbor_room.is_empty():
 				continue
 			
 			# Place neighbor adjacent to current room
