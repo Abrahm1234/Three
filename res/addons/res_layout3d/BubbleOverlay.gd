@@ -65,7 +65,7 @@ func update_display(program: ArchitecturalProgram, state: Dictionary) -> void:
 				"color": rd.get("color", Color(0.3, 0.6, 0.9, 0.8)),
 				"type": rd.get("type", id)
 			}
-		edges = program != null ? program.edges.duplicate(true) : []
+			edges = program.edges.duplicate(true) if program != null else []
 		doors = state.get("doors", {})
 	else:
 		_bubble_mode = true
@@ -154,8 +154,8 @@ func _draw_bubble() -> void:
 		var pa := _to_view(_bubble_rect(rooms[a_id])).get_center()
 		var pb := _to_view(_bubble_rect(rooms[b_id])).get_center()
 		var kind := String(edge.get("kind", "door"))
-		var color := kind == "open" ? Color.hex(0x99e2ffff) : Color.hex(0xffffffaa)
-		var width := kind == "open" ? 3.0 : 1.5
+		var color := Color.hex(0x99e2ffff) if kind == "open" else Color.hex(0xffffffaa)
+		var width := 3.0 if kind == "open" else 1.5
 		draw_line(pa, pb, color, width)
 
 func _draw_partition() -> void:
