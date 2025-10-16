@@ -249,7 +249,15 @@ static func _bin_program(prog, edges: Dictionary) -> void:
     var n_d_bins := d_edges.size() + 1
     _set_field(prog, "footprint_bin", w_bin * n_d_bins + d_bin)
 
-    var rooms: Array = prog.get("rooms", [])
+    var rooms: Array = []
+    if prog is ProgramInstance:
+        rooms = prog.rooms
+    elif typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog: Dictionary = prog
+        var raw_rooms = dict_prog.get("rooms")
+        if raw_rooms is Array:
+            rooms = raw_rooms
+
     var room_area_edges: PackedFloat64Array = edges.get("room_area_edges", PackedFloat64Array())
     var aspect_edges: PackedFloat64Array = edges.get("aspect_edges", PackedFloat64Array())
 
@@ -286,16 +294,30 @@ static func _bin_program(prog, edges: Dictionary) -> void:
     _set_field(prog, "rooms", rooms)
 
     var adj_pairs: Array = []
-    var edges_src: Array = prog.get("adjacencies", prog.get("edges", []))
+    var edges_src: Array = []
+    if prog is ProgramInstance:
+        var inst: ProgramInstance = prog
+        if inst.adjacencies.size() > 0:
+            edges_src = inst.adjacencies
+    elif typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog2: Dictionary = prog
+        var raw_adj = dict_prog2.get("adjacencies")
+        if raw_adj is Array:
+            edges_src = raw_adj
+    if edges_src.is_empty():
+        var legacy_edges = prog.get("edges") if prog is ProgramInstance else (prog as Dictionary).get("edges") if typeof(prog) == TYPE_DICTIONARY else null
+        if legacy_edges is Array:
+            edges_src = legacy_edges
+
     var adj_lookup := {}
     for edge in edges_src:
         var a_idx := _resolve_room_index(edge, "a", id_to_idx, label_to_indices, label_cycle)
         var b_idx := _resolve_room_index(edge, "b", id_to_idx, label_to_indices, label_cycle)
         if a_idx < 0 or b_idx < 0:
             continue
-        var i := min(a_idx, b_idx)
-        var j := max(a_idx, b_idx)
-        var key := "%d|%d" % [i, j]
+        var ai := min(a_idx, b_idx)
+        var bi := max(a_idx, b_idx)
+        var key := "%d|%d" % [ai, bi]
         adj_lookup[key] = String(edge.get("type", "door")).to_lower()
 
     for i in range(rooms.size()):
@@ -325,7 +347,6 @@ static func _bin_program(prog, edges: Dictionary) -> void:
     _set_field(prog, "room_counts", counts)
     _set_field(prog, "room_exists", exists)
     _set_field(prog, "room_count_bins", count_bins)
-
 static func _resolve_room_index(edge: Dictionary, field: String, id_to_idx: Dictionary, label_to_indices: Dictionary, label_cycle: Dictionary) -> int:
     var label := String(edge.get(field, ""))
     if label == "":
@@ -365,33 +386,70 @@ static func _program_to_dict(prog) -> Dictionary:
     var result := {}
     if prog == null:
         return result
-    result["floors"] = prog.get("floors", 1)
-    result["bedrooms"] = prog.get("bedrooms", prog.get("room_counts", {}).get("Bedroom", 0))
-    result["bathrooms"] = prog.get("bathrooms", prog.get("room_counts", {}).get("Bathroom", 0))
-    result["total_m2"] = _prog_total_m2(prog)
-    result["total_m2_bin"] = prog.get("total_m2_bin", prog.get("total_sqft_bin", -1))
-    var fp := _prog_footprint(prog)
-    result["footprint"] = {"w": fp.x, "d": fp.y}
-    result["footprint_w_bin"] = prog.get("footprint_w_bin", -1)
-    result["footprint_d_bin"] = prog.get("footprint_d_bin", -1)
-    result["footprint_bin"] = prog.get("footprint_bin", -1)
-    result["room_counts"] = prog.get("room_counts", {})
-    result["room_exists"] = prog.get("room_exists", {})
-    result["room_count_bins"] = prog.get("room_count_bins", {})
-    var rooms_out: Array = []
-    for room in prog.get("rooms", []):
-        if room is Dictionary:
-            rooms_out.append(room.duplicate(true))
+    if prog is ProgramInstance:
+        var inst: ProgramInstance = prog
+        result["floors"] = inst.floors
+        result["bedrooms"] = inst.bedrooms
+        result["bathrooms"] = inst.bathrooms
+        result["total_m2"] = _prog_total_m2(inst)
+        var bin_val := inst.total_m2_bin if inst.total_m2_bin != -1 else inst.total_sqft_bin
+        result["total_m2_bin"] = bin_val
+        var fp := _prog_footprint(inst)
+        result["footprint"] = {"w": fp.x, "d": fp.y}
+        result["footprint_w_bin"] = inst.footprint_w_bin
+        result["footprint_d_bin"] = inst.footprint_d_bin
+        result["footprint_bin"] = inst.footprint_bin
+        result["room_counts"] = inst.room_counts.duplicate()
+        result["room_exists"] = inst.room_exists.duplicate()
+        result["room_count_bins"] = inst.room_count_bins.duplicate()
+        var rooms_out: Array = []
+        for room in inst.rooms:
+            if room is Dictionary:
+                rooms_out.append(room.duplicate(true))
+            else:
+                rooms_out.append(room)
+        result["rooms"] = rooms_out
+        var adj_out: Array = []
+        for adj in inst.adj_pairs:
+            if adj is Dictionary:
+                adj_out.append(adj.duplicate(true))
+            else:
+                adj_out.append(adj)
+        result["adj_pairs"] = adj_out
+        return result
+    if typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog: Dictionary = prog
+        result["floors"] = dict_prog.get("floors", 1)
+        result["bedrooms"] = dict_prog.get("bedrooms", dict_prog.get("room_counts", {}).get("Bedroom", 0))
+        result["bathrooms"] = dict_prog.get("bathrooms", dict_prog.get("room_counts", {}).get("Bathroom", 0))
+        result["total_m2"] = float(dict_prog.get("total_m2", dict_prog.get("total_sqft", 0.0)))
+        result["total_m2_bin"] = dict_prog.get("total_m2_bin", dict_prog.get("total_sqft_bin", -1))
+        var fp_dict := dict_prog.get("footprint", {})
+        if fp_dict is Dictionary:
+            result["footprint"] = {"w": float(fp_dict.get("w", 0.0)), "d": float(fp_dict.get("d", 0.0))}
         else:
-            rooms_out.append(room)
-    result["rooms"] = rooms_out
-    var adj_out: Array = []
-    for adj in prog.get("adj_pairs", []):
-        if adj is Dictionary:
-            adj_out.append(adj.duplicate(true))
-        else:
-            adj_out.append(adj)
-    result["adj_pairs"] = adj_out
+            result["footprint"] = {"w": 0.0, "d": 0.0}
+        result["footprint_w_bin"] = dict_prog.get("footprint_w_bin", -1)
+        result["footprint_d_bin"] = dict_prog.get("footprint_d_bin", -1)
+        result["footprint_bin"] = dict_prog.get("footprint_bin", -1)
+        result["room_counts"] = dict_prog.get("room_counts", {})
+        result["room_exists"] = dict_prog.get("room_exists", {})
+        result["room_count_bins"] = dict_prog.get("room_count_bins", {})
+        var rooms_out_dict: Array = []
+        for room in dict_prog.get("rooms", []):
+            if room is Dictionary:
+                rooms_out_dict.append(room.duplicate(true))
+            else:
+                rooms_out_dict.append(room)
+        result["rooms"] = rooms_out_dict
+        var adj_out_dict: Array = []
+        for adj in dict_prog.get("adj_pairs", []):
+            if adj is Dictionary:
+                adj_out_dict.append(adj.duplicate(true))
+            else:
+                adj_out_dict.append(adj)
+        result["adj_pairs"] = adj_out_dict
+        return result
     return result
 
 static func save_binned_corpus(path: String, instances: Array) -> void:
@@ -400,31 +458,80 @@ static func save_binned_corpus(path: String, instances: Array) -> void:
         payload["instances"].append(_program_to_dict(prog))
     var file := FileAccess.open(path, FileAccess.WRITE)
     if file:
-        file.store_string(JSON.stringify(payload, "	"))
+        file.store_string(JSON.stringify(payload, "    "))
         file.close()
 
 static func _prog_total_m2(prog) -> float:
     if prog == null:
         return 0.0
-    var v: Variant = prog.get("total_m2")
-    if v == null:
-        v = prog.get("total_sqft")
+    var v: Variant = null
+    if typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog: Dictionary = prog
+        v = dict_prog.get("total_m2")
+        if v == null:
+            v = dict_prog.get("total_sqft")
+    else:
+        v = prog.get("total_m2")
+        if v == null:
+            v = prog.get("total_sqft")
     if v == null:
         v = 0.0
-    var total_value: float = float(v)
-    return total_value
+    return float(v)
 
 static func _prog_footprint(prog) -> Vector2:
-    var fp_val: Variant = prog.get("footprint")
+    if prog == null:
+        return Vector2.ZERO
+    var fp_val: Variant = null
+    if typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog: Dictionary = prog
+        fp_val = dict_prog.get("footprint")
+    else:
+        fp_val = prog.get("footprint")
     if fp_val is Vector2i:
-        var v: Vector2i = fp_val
-        return Vector2(float(v.x), float(v.y))
+        var vi: Vector2i = fp_val
+        return Vector2(float(vi.x), float(vi.y))
     if fp_val is Vector2:
         return fp_val
-    var width := float(prog.get("footprint_w", 0.0))
-    var depth := float(prog.get("footprint_d", 0.0))
+    var width := 0.0
+    var depth := 0.0
+    if typeof(prog) == TYPE_DICTIONARY:
+        var dw := (prog as Dictionary).get("footprint_w")
+        var dd := (prog as Dictionary).get("footprint_d")
+        if dw != null:
+            width = float(dw)
+        if dd != null:
+            depth = float(dd)
+    else:
+        var w_val := prog.get("footprint_w")
+        if w_val != null:
+            width = float(w_val)
+        var d_val := prog.get("footprint_d")
+        if d_val != null:
+            depth = float(d_val)
     return Vector2(width, depth)
 
+
+static func _prog_rooms_list(prog) -> Array:
+    if prog is ProgramInstance:
+        return prog.rooms
+    if typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog: Dictionary = prog
+        var arr = dict_prog.get("rooms")
+        if arr is Array:
+            return arr
+        return []
+    return []
+
+static func _prog_adj_pairs_list(prog) -> Array:
+    if prog is ProgramInstance:
+        return prog.adj_pairs
+    if typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog: Dictionary = prog
+        var arr = dict_prog.get("adj_pairs")
+        if arr is Array:
+            return arr
+        return []
+    return []
 static func _room_area_m2(room: Dictionary) -> float:
     if room.has("area_m2"):
         return float(room["area_m2"])
@@ -495,7 +602,8 @@ static func _collect_foot_dim(instances: Array, axis: String) -> Array:
 static func _collect_room_area(instances: Array) -> Array:
     var out: Array = []
     for prog in instances:
-        for room in prog.get("rooms", []):
+        var rooms := _prog_rooms_list(prog)
+        for room in rooms:
             if room is Dictionary:
                 out.append(_room_area_m2(room))
     return out
@@ -503,7 +611,8 @@ static func _collect_room_area(instances: Array) -> Array:
 static func _collect_room_aspect(instances: Array) -> Array:
     var out: Array = []
     for prog in instances:
-        for room in prog.get("rooms", []):
+        var rooms := _prog_rooms_list(prog)
+        for room in rooms:
             if room is Dictionary:
                 out.append(_room_aspect(room))
     return out
