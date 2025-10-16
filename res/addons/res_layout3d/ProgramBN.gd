@@ -84,12 +84,12 @@ func train(data: TrainingData, floors: int = 1, schema_in: Dictionary = {}) -> v
 		_build_default_structure()
 		return
 
-        if schema_in.is_empty():
-                var binning := TrainingData.bin_corpus(instances)
-                schema_edges = binning.get("schema", {})
-        else:
-                schema_edges = schema_in.duplicate(true)
-                TrainingData.apply_binning(instances, schema_edges)
+	if schema_in.is_empty():
+		var binning := TrainingData.bin_corpus(instances)
+		schema_edges = binning.get("schema", {})
+	else:
+		schema_edges = schema_in.duplicate(true)
+		TrainingData.apply_binning(instances, schema_edges)
 
 	_build_structure_from_data(instances)
 	_learn_parameters(instances)
