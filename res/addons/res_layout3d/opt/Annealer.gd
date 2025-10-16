@@ -56,7 +56,7 @@ func _auto_initial_temperature(part: Partition, cost: PlanCost, entry_idx: int, 
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
 	var base_cost := cost.total(part, entry_idx, terms)
-	var deltas: Array = []
+	var deltas: Array[float] = []
 	for _i in range(samples):
 		var backup := part.snapshot()
 		if not _apply_random_edit(part, rng):
@@ -70,7 +70,7 @@ func _auto_initial_temperature(part: Partition, cost: PlanCost, entry_idx: int, 
 	if deltas.is_empty():
 		return max(t0, 0.5)
 	deltas.sort()
-	var median := deltas[deltas.size() / 2]
+	var median: float = deltas[deltas.size() / 2]
 	return max(0.5, 2.0 * median)
 
 func _apply_random_edit(part: Partition, rng: RandomNumberGenerator) -> bool:
