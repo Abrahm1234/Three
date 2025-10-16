@@ -3,7 +3,7 @@ class_name Doors
 
 const Partition := preload("res://addons/res_layout3d/partition/Partition.gd")
 
-const DOOR_W := 0.9
+const DOOR_W: float = 0.9
 
 static func candidates(part: Partition) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
@@ -21,6 +21,22 @@ static func access_graph(part: Partition) -> Dictionary:
 	for edge in candidates(part):
 		graph[edge["a"]][edge["b"]] = 1.0
 		graph[edge["b"]][edge["a"]] = 1.0
+	return graph
+
+# Treat open-wall adjacencies as passable even if no door span is cut yet.
+static func access_graph_with_program(part: Partition, program) -> Dictionary:
+	var graph := access_graph(part)
+	var idx_by_label := {}
+	for i in range(part.rooms.size()):
+		idx_by_label[part.rooms[i].label] = i
+	for e in program.edges:
+		if String(e.get("kind", "")) != "open":
+			continue
+		var a := idx_by_label.get(String(e.get("a_id", "")), -1)
+		var b := idx_by_label.get(String(e.get("b_id", "")), -1)
+		if a >= 0 and b >= 0:
+			graph[a][b] = 1.0
+			graph[b][a] = 1.0
 	return graph
 
 static func access_graph_pairs(part: Partition, pairs: Array[Vector2i]) -> Dictionary:
@@ -96,9 +112,12 @@ static func access_graph_labels(part: Partition, allowed: Dictionary) -> Diction
 static func dists_from_labels(part: Partition, start_idx: int, allowed: Dictionary) -> PackedFloat64Array:
 	var G := access_graph_labels(part, allowed)
 	var N := part.rooms.size()
-	var dist := PackedFloat64Array(); dist.resize(N)
-	for k in N: dist[k] = INF
-	if start_idx < 0 or start_idx >= N: return dist
+	var dist := PackedFloat64Array()
+	dist.resize(N)
+	for k in range(N):
+		dist[k] = INF
+	if start_idx < 0 or start_idx >= N:
+		return dist
 	dist[start_idx] = 0.0
 	var q: Array[int] = [start_idx]
 	while not q.is_empty():
