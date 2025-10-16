@@ -361,7 +361,7 @@ static func _bin_program(prog, edges: Dictionary) -> void:
         var summary: Dictionary = pair_summary[pair_label]
         var exist_flag := bool(summary.get("exist", false))
         var type_label := String(summary.get("type", "none"))
-        _set_field(prog, "adj_%s_exist" % pair_label, exist_flag ? 1 : 0)
+        _set_field(prog, "adj_%s_exist" % pair_label, 1 if exist_flag else 0)
         _set_field(prog, "adj_%s_type" % pair_label, type_label)
 
     var counts: Dictionary = {}
@@ -373,9 +373,9 @@ static func _bin_program(prog, edges: Dictionary) -> void:
         var exists_key := "%s_exists" % room_type
         var count_key := "%s_count" % room_type
         var exist_flag := count > 0
-        exists[exists_key] = exist_flag ? 1 : 0
+        exists[exists_key] = 1 if exist_flag else 0
         count_bins["%s_count_bin" % room_type] = _count_to_bin(count)
-        _set_field(prog, exists_key, exist_flag ? 1 : 0)
+        _set_field(prog, exists_key, 1 if exist_flag else 0)
         _set_field(prog, count_key, count)
 
     _set_field(prog, "room_counts", counts)
@@ -459,7 +459,7 @@ static func _program_to_dict(prog) -> Dictionary:
             var summary_dict: Dictionary = inst.adj_summary
             for pair_label in summary_dict.keys():
                 var summary: Dictionary = summary_dict[pair_label]
-                result["adj_%s_exist" % pair_label] = summary.get("exist", false) ? 1 : 0
+                result["adj_%s_exist" % pair_label] = 1 if summary.get("exist", false) else 0
                 result["adj_%s_type" % pair_label] = String(summary.get("type", "none"))
         return result
     if typeof(prog) == TYPE_DICTIONARY:
@@ -499,7 +499,7 @@ static func _program_to_dict(prog) -> Dictionary:
             var summary_dict: Dictionary = summary_dict_any
             for pair_label in summary_dict.keys():
                 var summary: Dictionary = summary_dict[pair_label]
-                result["adj_%s_exist" % pair_label] = summary.get("exist", false) ? 1 : 0
+                result["adj_%s_exist" % pair_label] = 1 if summary.get("exist", false) else 0
                 result["adj_%s_type" % pair_label] = String(summary.get("type", "none"))
         var counts_dict_any = dict_prog.get("room_counts", {})
         if counts_dict_any is Dictionary:
