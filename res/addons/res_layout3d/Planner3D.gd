@@ -212,7 +212,7 @@ const PartitionIO := preload("res://addons/res_layout3d/partition/PartitionIO.gd
 const Partition := preload("res://addons/res_layout3d/partition/Partition.gd")
 const Doors := preload("res://addons/res_layout3d/plan/Doors.gd")
 const PlanCost := preload("res://addons/res_layout3d/plan/PlanCost.gd")
-const PlanOptimize := preload("res://addons/res_layout3d/plan/PlanOptimize.gd")
+const Annealer := preload("res://addons/res_layout3d/opt/Annealer.gd")
 const BubbleOverlay := preload("res://addons/res_layout3d/BubbleOverlay.gd")
 
 @onready var rooms_root: Node3D = $"Rooms"
@@ -247,7 +247,9 @@ const BubbleOverlay := preload("res://addons/res_layout3d/BubbleOverlay.gd")
 @onready var adj_list: ItemList = $"UI/Root/Panel/VBox/AdjList"
 @onready var beta: SpinBox = $"UI/Root/Panel/VBox/Bottom/Beta"
 @onready var iters: SpinBox = $"UI/Root/Panel/VBox/Bottom/Iters"
+@onready var bubble_ui: BubbleOverlay = $"%BubbleOverlay" if has_node("%BubbleOverlay") else null
 
+@export_enum("Bubble","Schematic","Detailed") var view_stage := "Bubble"
 @export var use_bn: bool = true
 @export var styles: Array[HouseStyle] = []
 
@@ -265,6 +267,12 @@ var roof_root: Node3D
 
 const WALL_H := 3.0
 func _ready() -> void:
+	_bind_key("ui_stage_bubble", KEY_1)
+	_bind_key("ui_stage_schematic", KEY_2)
+	_bind_key("ui_stage_detailed", KEY_3)
+	_bind_key("ui_floor_prev", KEY_PAGEUP)
+	_bind_key("ui_floor_next", KEY_PAGEDOWN)
+	_bind_key("toggle_roof", KEY_R)
 	new_btn.pressed.connect(_new_program)
 	sample_btn.pressed.connect(_sample_program)
 	opt_btn.pressed.connect(_optimize_once)
@@ -276,7 +284,7 @@ func _ready() -> void:
 	save_plan_btn.pressed.connect(func(): save_plan())
 	load_plan_btn.pressed.connect(func(): load_plan())
 	add_child(R)
-	
+
 	R.reseed(Time.get_ticks_msec())
 	print("✓ RNG seeded with: %d" % Time.get_ticks_msec())
 	
@@ -289,9 +297,17 @@ func _ready() -> void:
 	
 	var TrainingDataClass = load("res://addons/res_layout3d/data/TrainingData.gd")
 	var training_data = TrainingDataClass.create_default()
+	var corpus: Array = []
+	corpus.append_array(training_data.single_story)
+	corpus.append_array(training_data.two_story)
+	corpus.append_array(training_data.three_story)
+	var binning: Dictionary = TrainingDataClass.bin_corpus(corpus)
+	var schema: Dictionary = binning.get("schema", {})
+	if bn and bn.has_method("configure_from_schema"):
+		bn.configure_from_schema(schema)
 	if bn and bn.has_method("train"):
-		bn.train(training_data, 1)
-		print("✓ Bayesian Network trained with %d instances" % training_data.single_story.size())
+		bn.train(training_data, 1, schema)
+		print("✓ Bayesian Network trained with %d instances" % corpus.size())
 	
 	w_access.value_changed.connect(func(_v): _apply_weights())
 	w_dims.value_changed.connect(func(_v): _apply_weights())
@@ -310,10 +326,9 @@ func _ready() -> void:
 	overlay.z_index = -100
 	ui_root_node.add_child(overlay)
 	overlay_chk.toggled.connect(func(pressed: bool) -> void:
-		if overlay: overlay.visible = pressed
+		if overlay: overlay.visible = pressed and view_stage == "Bubble"
 	)
-	overlay.visible = overlay_chk.button_pressed
-	_setup_roof_input()
+	overlay.visible = overlay_chk.button_pressed and view_stage == "Bubble"
 	_ensure_roof_root()
 	roof_chk.toggled.connect(func(on: bool):
 		if is_instance_valid(roof_root):
@@ -328,7 +343,6 @@ func _ready() -> void:
 		cost_tree.set_column_title(0, "Term")
 		cost_tree.set_column_title(1, "Value")
 	plan_cost = PlanCost.new()
-	add_child(plan_cost)
 	if styles.size() > 0:
 		style_idx = 0
 		style = styles[0]
@@ -343,15 +357,33 @@ func _ensure_roof_root() -> void:
 		roof_root.name = "Roof"
 		rooms_root.add_child(roof_root)
 
-func _setup_roof_input() -> void:
-	if not InputMap.has_action("toggle_roof"):
-		InputMap.add_action("toggle_roof")
-		var ev: InputEventKey = InputEventKey.new()
-		ev.physical_keycode = KEY_H
-		InputMap.action_add_event("toggle_roof", ev)
+func _bind_key(action: StringName, keycode: int) -> void:
+	if not InputMap.has_action(action):
+		InputMap.add_action(action)
+	var events := InputMap.action_get_events(action)
+	for existing in events:
+		if existing is InputEventKey and existing.physical_keycode == keycode:
+			return
+	var ev := InputEventKey.new()
+	ev.physical_keycode = keycode
+	InputMap.action_add_event(action, ev)
 
 func _unhandled_input(e: InputEvent) -> void:
-	if e.is_action_pressed("toggle_roof"):
+	if InputMap.has_action("ui_stage_bubble") and e.is_action_pressed("ui_stage_bubble"):
+		set_stage("Bubble")
+	elif InputMap.has_action("ui_stage_schematic") and e.is_action_pressed("ui_stage_schematic"):
+		set_stage("Schematic")
+	elif InputMap.has_action("ui_stage_detailed") and e.is_action_pressed("ui_stage_detailed"):
+		set_stage("Detailed")
+	elif InputMap.has_action("ui_floor_prev") and e.is_action_pressed("ui_floor_prev"):
+		if bubble_ui and program:
+			var next_floor := max(0, (bubble_ui.current_floor if bubble_ui != null else 0) - 1)
+			show_bubble_for(program, next_floor)
+	elif InputMap.has_action("ui_floor_next") and e.is_action_pressed("ui_floor_next"):
+		if bubble_ui and program:
+			var next_floor := (bubble_ui.current_floor if bubble_ui != null else 0) + 1
+			show_bubble_for(program, next_floor)
+	elif InputMap.has_action("toggle_roof") and e.is_action_pressed("toggle_roof"):
 		roof_chk.button_pressed = not roof_chk.button_pressed
 
 func _new_program() -> void:
@@ -375,6 +407,7 @@ func _new_program() -> void:
 
 	_update_adj_list()
 	_clear_batch_results()
+	show_bubble_for(program)
 	_seed_state_from_program(program)
 	_rebuild_meshes()
 
@@ -414,7 +447,7 @@ func _update_adj_list() -> void:
 	adj_list.clear()
 	for e in program.edges:
 		var ed: Dictionary = e
-		adj_list.add_item("%s <-> %s (%s)" % [ed.get("a_id", ""), ed.get("b_id", ""), ed.get("type", "")])
+		adj_list.add_item("%s <-> %s (%s)" % [ed.get("a_id", ""), ed.get("b_id", ""), ed.get("kind", "")])
 
 func _seed_state_from_program(prog: ArchitecturalProgram) -> void:
 	if prog == null:
@@ -449,7 +482,7 @@ func _allowed_door_types() -> Dictionary:
 	var types := {}
 	if program == null: return types
 	for e in program.edges:
-		var t := String(e.get("type","door"))
+		var t := String(e.get("kind","door"))
 		if t != "door" and t != "open": continue
 		var a := String(e.get("a_id","")); var b := String(e.get("b_id",""))
 		if a == "" or b == "": continue
@@ -474,7 +507,7 @@ func _doors_from_partition_array(part: Partition) -> Array[Dictionary]:
 	for e in program.edges:
 		var a_id := String(e.get("a_id", ""))
 		var b_id := String(e.get("b_id", ""))
-		var typ := String(e.get("type", "door"))
+		var typ := String(e.get("kind", "door"))
 		var A := _room_rect_by_id(part, a_id)
 		var B := _room_rect_by_id(part, b_id)
 		if A == Rect2() or B == Rect2(): continue
@@ -491,7 +524,7 @@ func _doors_from_partition_array(part: Partition) -> Array[Dictionary]:
 			out.append({"axis": axis, "c": c, "span": Vector2(a, b), "type": "open"})
 		else:
 			var mid := 0.5 * (a + b)
-			var half := (program.default_door_w if program != null else 0.9) * 0.5
+			var half := ((program.default_door_w if program != null else 0.9) * 0.5)
 			out.append({"axis": axis, "c": c, "span": Vector2(mid - half, mid + half), "type": "door"})
 	return out
 
@@ -529,7 +562,7 @@ func _doors_from_partition(part: Partition) -> Dictionary:
 			var typ := String(types.get(key, "door"))
 			var clearance := program.door_clear if program != null else 0.1
 			var door_w := program.default_door_w if program != null else 0.9
-			
+
 			var corner_bias := 0.2
 			var t := corner_bias if randf() < 0.5 else (1.0 - corner_bias)
 			
@@ -556,7 +589,7 @@ func _allowed_idx_pairs(part: Partition) -> Array[Vector2i]:
 		var prog_id := String(program.rooms[i].get("id", str(i)))
 		id_to_idx[prog_id] = i
 	for edge in program.edges:
-		var typ := String(edge.get("type", ""))
+		var typ := String(edge.get("kind", ""))
 		if typ != "door" and typ != "open":
 			continue
 		var a_id := String(edge.get("a_id", ""))
@@ -596,7 +629,11 @@ func _update_state_from_partition() -> void:
 	state = _state_from_partition(partition)
 	_update_cost_ui()
 	if is_instance_valid(overlay):
-		overlay.update_display(program, state)
+		if view_stage == "Bubble" and program != null:
+			var floor_idx := bubble_ui.current_floor if bubble_ui != null else 0
+			show_bubble_for(program, floor_idx)
+		else:
+			overlay.update_display(program, state)
 
 func _program_terms() -> Dictionary:
 	var terms := {}
@@ -655,7 +692,7 @@ func _allowed_label_pairs() -> Dictionary:
 	for r in program.rooms:
 		id2label[String(r.get("id",""))] = String(r.get("type",""))
 	for e in program.edges:
-		var t := String(e.get("type",""))
+		var t := String(e.get("kind",""))
 		if t != "door" and t != "open": continue
 		var a := id2label.get(String(e.get("a_id","")), "")
 		var b := id2label.get(String(e.get("b_id","")), "")
@@ -669,20 +706,30 @@ func _metrics_for(part: Partition) -> Dictionary:
 		if plan_cost != null:
 			var empty_pairs: Array[Vector2i] = []
 			plan_cost.allowed_pairs = empty_pairs
-		return {"access": 0.0, "dims": 0.0, "shape": 0.0, "exposure": 0.0, "overlap": 0.0, "total": 0.0}
+		return {
+			"access": 0.0,
+			"privacy": 0.0,
+			"dims": 0.0,
+			"shape": 0.0,
+			"exposure": 0.0,
+			"overlap": 0.0,
+			"total": 0.0,
+		}
 	var pairs := _allowed_idx_pairs(part)
 	plan_cost.allowed_pairs = pairs
 	plan_cost.allowed_label_pairs = _allowed_label_pairs()
 	var terms := _program_terms()
 	var entry_idx := _entry_room_index_for(part)
-	var access := plan_cost.C_access(part, entry_idx, terms)
-	var dims := plan_cost.C_dims(part)
-	var shape := plan_cost.C_shape(part)
-	var exposure := plan_cost.C_exposure(part, terms)
-	var overlap := plan_cost.C_overlap(part)
-	var total := plan_cost.total(part, entry_idx, terms)
+	var access: float = plan_cost.C_access(part, entry_idx, terms)
+	var privacy: float = plan_cost.C_privacy(part, entry_idx)
+	var dims: float = plan_cost.C_dims(part)
+	var shape: float = plan_cost.C_shape(part)
+	var exposure: float = plan_cost.C_exposure(part, terms)
+	var overlap: float = plan_cost.C_overlap(part)
+	var total: float = plan_cost.total(part, entry_idx, terms)
 	return {
 		"access": access,
+		"privacy": privacy,
 		"dims": dims,
 		"shape": shape,
 		"exposure": exposure,
@@ -707,17 +754,21 @@ func _copy_partition(src: Partition) -> Partition:
 	return copy
 
 func _optimize_partition(iterations: int, source: Partition) -> Partition:
-	var starting := _copy_partition(source)
-	if starting == null:
+	var working := _copy_partition(source)
+	if working == null:
 		return null
-	var optimizer := PlanOptimize.new()
-	optimizer.iters = max(1, iterations)
-	optimizer.temp0 = max(0.01, float(beta.value))
-	optimizer.allowed_pairs = _allowed_idx_pairs(starting)
-	optimizer.allowed_label_pairs = _allowed_label_pairs()
+	var steps := max(1, iterations)
+	var entry_idx := _entry_room_index_for(working)
 	var terms := _program_terms()
-	var entry_idx := _entry_room_index_for(starting)
-	return optimizer.optimize(starting, entry_idx, terms)
+	plan_cost.allowed_pairs = _allowed_idx_pairs(working)
+	plan_cost.allowed_label_pairs = _allowed_label_pairs()
+	var annealer := Annealer.new()
+	annealer.iters = steps
+	annealer.t0 = max(0.01, float(beta.value))
+	var decay := pow(0.01, 1.0 / max(1.0, float(steps)))
+	annealer.alpha = clamp(decay, 0.90, 0.999)
+	annealer.run(working, plan_cost, entry_idx, terms)
+	return working
 
 func _compare_results(a: Dictionary, b: Dictionary) -> bool:
 	return float(a.get("metrics", {}).get("total", INF)) < float(b.get("metrics", {}).get("total", INF))
@@ -889,9 +940,16 @@ func _rebuild_meshes() -> void:
 	var outer: Rect2 = state.get("outer", Rect2())
 	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	print("🏠 Rebuilding meshes: rooms=%d footprint=%s" % [state.get("rooms", {}).size(), outer])
+
 	if is_instance_valid(overlay):
-		overlay.update_display(program, state)
+		if view_stage == "Bubble" and program != null:
+			var floor_idx := bubble_ui.current_floor if bubble_ui != null else 0
+			show_bubble_for(program, floor_idx)
+		else:
+			overlay.update_display(program, state)
+
 	_update_cost_ui()
+
 	for c in rooms_root.get_children():
 		if c != roof_root:
 			c.queue_free()
@@ -919,20 +977,17 @@ func _rebuild_meshes() -> void:
 		var r: Dictionary = rooms_dict[id]
 		var rect: Rect2 = r["rect"]
 		var col: Color = r["color"]
-
-		var rects: Array = [rect]
-		for rr in rects:
-			var piece := MeshInstance3D.new()
-			var piece_box := BoxMesh.new()
-			piece_box.size = Vector3(rr.size.x, 0.3, rr.size.y)
-			piece.mesh = piece_box
-			piece.transform = Transform3D(Basis(), Vector3(rr.position.x + rr.size.x * 0.5, 0.15, rr.position.y + rr.size.y * 0.5))
-			var mat := StandardMaterial3D.new()
-			mat.albedo_color = col
-			mat.roughness = 0.9
-			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			piece.material_override = mat
-			rooms_root.add_child(piece)
+		var piece := MeshInstance3D.new()
+		var piece_box := BoxMesh.new()
+		piece_box.size = Vector3(rect.size.x, 0.3, rect.size.y)
+		piece.mesh = piece_box
+		piece.transform = Transform3D(Basis(), Vector3(rect.position.x + rect.size.x * 0.5, 0.15, rect.position.y + rect.size.y * 0.5))
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = col
+		mat.roughness = 0.9
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		piece.material_override = mat
+		rooms_root.add_child(piece)
 
 	if partition != null:
 		var doors := _doors_from_partition_array(partition)
@@ -965,7 +1020,7 @@ func _rebuild_meshes() -> void:
 
 	if roof_chk.button_pressed:
 		_add_simple_hip_roof_rect(outer, 28.0)
-	
+
 	_debug_draw_doors()
 	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
@@ -1035,15 +1090,16 @@ func _add_simple_hip_roof_rect(rect: Rect2, height: float) -> void:
 func _apply_weights() -> void:
 	if plan_cost == null:
 		return
-	
+
 	plan_cost.k_access = float(w_access.value)
 	plan_cost.k_dims = float(w_dims.value)
 	plan_cost.k_shape = float(w_shape.value)
 	plan_cost.k_expose = float(w_exposure.value)
 	plan_cost.k_floors = float(w_floors.value)
-	
-	print("✓ Weights: k_access=%.1f k_dims=%.1f k_shape=%.1f k_expose=%.1f k_floors=%.0f" % [
+
+	print("✓ Weights: k_access=%.1f k_privacy=%.1f k_dims=%.1f k_shape=%.1f k_expose=%.1f k_floors=%.0f" % [
 		plan_cost.k_access,
+		plan_cost.k_privacy,
 		plan_cost.k_dims,
 		plan_cost.k_shape,
 		plan_cost.k_expose,
@@ -1053,6 +1109,24 @@ func _apply_weights() -> void:
 func _ensure_overlay() -> void:
 	if overlay == null or not is_instance_valid(overlay):
 		overlay = BubbleOverlay.new()
+	if bubble_ui == null or not is_instance_valid(bubble_ui):
+		bubble_ui = overlay
+
+func set_stage(stage: String) -> void:
+	view_stage = stage
+	if bubble_ui:
+		bubble_ui.visible = overlay_chk.button_pressed and stage == "Bubble"
+	_rebuild_meshes()
+
+func show_bubble_for(program: ArchitecturalProgram, floor := 0) -> void:
+	if bubble_ui == null:
+		return
+	bubble_ui.update_display(program, {
+		"floor": floor,
+		"show_privacy": true,
+		"show_labels": true,
+		"show_edges": true
+	})
 
 func _rescale_ui() -> void:
 	pass
@@ -1060,28 +1134,36 @@ func _rescale_ui() -> void:
 func _update_cost_ui() -> void:
 	if cost_tree == null or partition == null:
 		return
-	
+
 	cost_tree.clear()
 	var root := cost_tree.create_item()
-	
+
 	var metrics := _metrics_for(partition)
-	
+
 	var access_item := cost_tree.create_item(root)
 	access_item.set_text(0, "Access")
 	access_item.set_text(1, "%.2f" % metrics.get("access", 0.0))
-	
+
+	var privacy_item := cost_tree.create_item(root)
+	privacy_item.set_text(0, "Privacy")
+	privacy_item.set_text(1, "%.2f" % metrics.get("privacy", 0.0))
+
 	var dims_item := cost_tree.create_item(root)
 	dims_item.set_text(0, "Dimensions")
 	dims_item.set_text(1, "%.2f" % metrics.get("dims", 0.0))
-	
+
 	var shape_item := cost_tree.create_item(root)
 	shape_item.set_text(0, "Shape")
 	shape_item.set_text(1, "%.2f" % metrics.get("shape", 0.0))
-	
+
 	var exposure_item := cost_tree.create_item(root)
 	exposure_item.set_text(0, "Exposure")
 	exposure_item.set_text(1, "%.2f" % metrics.get("exposure", 0.0))
-	
+
+	var overlap_item := cost_tree.create_item(root)
+	overlap_item.set_text(0, "Overlap")
+	overlap_item.set_text(1, "%.2f" % metrics.get("overlap", 0.0))
+
 	var total_item := cost_tree.create_item(root)
 	total_item.set_text(0, "TOTAL")
 	total_item.set_text(1, "%.2f" % metrics.get("total", 0.0))
