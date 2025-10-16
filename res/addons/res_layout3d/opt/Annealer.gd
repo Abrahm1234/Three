@@ -9,17 +9,18 @@ const Validate := preload("res://addons/res_layout3d/partition/Validate.gd")
 @export var t0: float = 2.0
 @export var alpha: float = 0.995
 
+
 func run(part: Partition, cost: PlanCost, entry_idx: int, terms: Dictionary) -> void:
 	if part == null or cost == null:
 		return
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
-	var best_snapshot := part.snapshot()
+	var best_snapshot: Dictionary = part.snapshot()
 	var best_cost := cost.total(part, entry_idx, terms)
 	var current_cost := best_cost
 	var temperature := t0
 	for step in range(max(1, iters)):
-		var backup := part.snapshot()
+		var backup: Dictionary = part.snapshot()
 		if not _apply_random_edit(part, rng):
 			continue
 		if not Validate.feasible(part):
