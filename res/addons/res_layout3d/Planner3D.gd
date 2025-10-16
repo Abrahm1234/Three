@@ -306,20 +306,20 @@ func _ready() -> void:
 	var schema: Dictionary = binning.get("schema", {})
 	if bn and bn.has_method("configure_from_schema"):
 		bn.configure_from_schema(schema)
-        if bn and bn.has_method("train"):
-                bn.train(training_data, 1, schema)
-                print("✓ Bayesian Network trained with %d instances" % corpus.size())
-                if DEBUG_VERIFY:
-                        var room_types_count := 0
-                        var room_types_variant := schema.get("room_types")
-                        if room_types_variant is Array:
-                                room_types_count = (room_types_variant as Array).size()
-                        var adj_pairs_count := int(schema.get("adj_pairs_count", 0))
-                        if adj_pairs_count == 0:
-                                var adj_variant := schema.get("adj_pairs")
-                                if adj_variant is Array:
-                                        adj_pairs_count = (adj_variant as Array).size()
-                        print("[PLAN] BN ready. room_types=%d adj_pairs=%d" % [room_types_count, adj_pairs_count])
+		if bn and bn.has_method("train"):
+				bn.train(training_data, 1, schema)
+				print("✓ Bayesian Network trained with %d instances" % corpus.size())
+				if DEBUG_VERIFY:
+						var room_types_count := 0
+						var room_types_variant := schema.get("room_types")
+						if room_types_variant is Array:
+								room_types_count = (room_types_variant as Array).size()
+						var adj_pairs_count := int(schema.get("adj_pairs_count", 0))
+						if adj_pairs_count == 0:
+								var adj_variant := schema.get("adj_pairs")
+								if adj_variant is Array:
+										adj_pairs_count = (adj_variant as Array).size()
+						print("[PLAN] BN ready. room_types=%d adj_pairs=%d" % [room_types_count, adj_pairs_count])
 	
 	w_access.value_changed.connect(func(_v): _apply_weights())
 	w_dims.value_changed.connect(func(_v): _apply_weights())
