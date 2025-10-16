@@ -1265,11 +1265,11 @@ static func _set_field(target, name: String, value) -> void:
 static func _prog_total_m2(prog) -> float:
 	if prog == null:
 		return 0.0
-	var total := prog.get("total_m2", prog.get("total_sqft", 0.0))
+	var total = prog.get("total_m2", prog.get("total_sqft", 0.0))
 	return float(total)
 
 static func _prog_footprint(prog) -> Vector2:
-	var fp_val := prog.get("footprint", Vector2.ZERO)
+	var fp_val = prog.get("footprint", Vector2.ZERO)
 	if fp_val is Vector2i:
 		var v: Vector2i = fp_val
 		return Vector2(float(v.x), float(v.y))
