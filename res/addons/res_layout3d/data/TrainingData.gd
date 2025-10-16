@@ -1080,13 +1080,13 @@ static func create_default() -> TrainingData:
 	# Add to dataset
 	data.single_story.append(plan_7)
 	
-print("✓ Training data created: %d single-story, %d two-story, %d three-story" % [
-data.single_story.size(),
-data.two_story.size(),
-data.three_story.size()
-])
+        print("✓ Training data created: %d single-story, %d two-story, %d three-story" % [
+                data.single_story.size(),
+                data.two_story.size(),
+                data.three_story.size()
+        ])
 
-return data
+        return data
 
 # ==============================================================================
 # Corpus binning utilities
@@ -1237,7 +1237,7 @@ static func _bin_program(prog, edges: Dictionary) -> void:
 			var key := "%d|%d" % [i, j]
 			if adj_lookup.has(key):
 				var kind := String(adj_lookup[key])
-				var adj_type := kind == "door" ? AdjType.DOOR : AdjType.OPEN
+				var adj_type := AdjType.DOOR if kind == "door" else AdjType.OPEN
 				adj_pairs.append({"a": i, "b": j, "exist": 1, "type": adj_type})
 			else:
 				adj_pairs.append({"a": i, "b": j, "exist": 0, "type": AdjType.OPEN})
@@ -1345,7 +1345,7 @@ static func _collect_foot_dim(instances: Array, which: String) -> Array:
 	var out: Array = []
 	for prog in instances:
 		var fp := _prog_footprint(prog)
-		out.append(which == "w" ? fp.x : fp.y)
+		out.append(fp.x if which == "w" else fp.y)
 	return out
 
 static func _collect_room_area(instances: Array) -> Array:
