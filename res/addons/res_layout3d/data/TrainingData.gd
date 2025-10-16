@@ -406,11 +406,16 @@ static func save_binned_corpus(path: String, instances: Array) -> void:
 static func _prog_total_m2(prog) -> float:
     if prog == null:
         return 0.0
-    var total_value: float = float(prog.get("total_m2", prog.get("total_sqft", 0.0)))
+    var v := prog.get("total_m2")
+    if v == null:
+        v = prog.get("total_sqft")
+    if v == null:
+        v = 0.0
+    var total_value: float = float(v)
     return total_value
 
 static func _prog_footprint(prog) -> Vector2:
-    var fp_val: Variant = prog.get("footprint", null)
+    var fp_val := prog.get("footprint")
     if fp_val is Vector2i:
         var v: Vector2i = fp_val
         return Vector2(float(v.x), float(v.y))
