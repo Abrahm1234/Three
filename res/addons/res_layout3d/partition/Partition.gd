@@ -125,7 +125,7 @@ func slide_shared_wall(rng: RandomNumberGenerator, max_delta: float) -> bool:
 	var pairs := _adjacent_pairs()
 	if pairs.is_empty():
 		return false
-	var edge := pairs[rng.randi_range(0, pairs.size() - 1)]
+	var edge: Dictionary = pairs[rng.randi_range(0, pairs.size() - 1)]
 	var delta := rng.randf_range(-max_delta, max_delta)
 	if is_zero_approx(delta):
 		delta = max_delta if rng.randf() < 0.5 else -max_delta
