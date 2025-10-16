@@ -222,8 +222,12 @@ func debug_dump_node(name: String) -> void:
 		return
 	var node: BNNode = nodes[name]
 	var keys := node.cpt.keys()
-	var first_key := keys[0] if keys.size() > 0 else ""
-	var sample := node.cpt.get(first_key, [])
+	var first_key: Variant = null
+	if not keys.is_empty():
+		first_key = keys[0]
+	var sample := []
+	if first_key != null and node.cpt.has(first_key):
+		sample = node.cpt[first_key]
 	print("[BN] node=%s rows=%d sample_row=%s" % [name, node.cpt.size(), str(sample)])
 
 func _extract_feature(prog: TrainingData.ProgramInstance, feature: String) -> Variant:
