@@ -1,6 +1,8 @@
 extends Resource
 class_name TrainingData
 
+const DEBUG_VERIFY := true
+
 ## Represents a single training example for the Bayesian network
 class ProgramInstance:
     extends RefCounted
@@ -200,19 +202,75 @@ static func default_binning_config() -> Dictionary:
     }
 
 static func bin_corpus(instances: Array, cfg: Dictionary = default_binning_config()) -> Dictionary:
-    var edges := _prepare_edges(instances, cfg)
-    apply_binning(instances, edges)
+	var edges := _prepare_edges(instances, cfg)
+	apply_binning(instances, edges)
 
-    var exported: Array = []
-    for prog in instances:
-        exported.append(_program_to_dict(prog))
+	var exported: Array = []
+	for prog in instances:
+		exported.append(_program_to_dict(prog))
 
-    var schema := _build_schema(exported, edges)
-    return {
-        "schema": schema,
-        "instances": exported,
-    }
+	var schema := _build_schema(exported, edges)
+	var result := {
+		"schema": schema,
+		"instances": exported,
+	}
+	if DEBUG_VERIFY:
+		_dbg_bins(schema, exported)
+	return result
 
+static func _dbg_bins(schema: Dictionary, insts: Array) -> void:
+	if insts.is_empty():
+		print("[BIN] empty corpus")
+		return
+	var room_types_count := 0
+	var room_types_var := schema.get("room_types")
+	if room_types_var is Array:
+		room_types_count = (room_types_var as Array).size()
+	var edges_dict_variant := schema.get("bin_edges", {})
+	var total_bins := 0
+	var footprint_bins := 0
+	var area_bins := 0
+	var aspect_bins := 0
+	if edges_dict_variant is Dictionary:
+		var edges_dict: Dictionary = edges_dict_variant
+		total_bins = _edge_count(edges_dict.get("total_sqft"))
+		footprint_bins = _edge_count(edges_dict.get("footprint"))
+		area_bins = _edge_count(edges_dict.get("area"))
+		aspect_bins = _edge_count(edges_dict.get("aspect"))
+	else:
+		total_bins = _edge_count(schema.get("total_m2_edges"))
+		var footprint_w_bins := _edge_count(schema.get("footprint_w_edges"))
+		var footprint_d_bins := _edge_count(schema.get("footprint_d_edges"))
+		footprint_bins = footprint_w_bins + footprint_d_bins
+		area_bins = _edge_count(schema.get("room_area_edges"))
+		aspect_bins = _edge_count(schema.get("aspect_edges"))
+	var adj_pairs_count := int(schema.get("adj_pairs_count", 0))
+	print("[BIN] instances=%d room_types=%d adj_pairs=%d" % [
+		insts.size(),
+		room_types_count,
+		adj_pairs_count
+	])
+	print("[BIN] bins: total_sqft=%d footprint=%d area=%d aspect=%d" % [
+		total_bins,
+		footprint_bins,
+		area_bins,
+		aspect_bins
+	])
+	var first_variant = insts[0]
+	var first_dict: Dictionary = {}
+	if typeof(first_variant) == TYPE_DICTIONARY:
+		first_dict = first_variant
+	else:
+		first_dict = _program_to_dict(first_variant)
+	var sample_rooms := 0
+	var sample_rooms_variant := first_dict.get("rooms", [])
+	if sample_rooms_variant is Array:
+		sample_rooms = (sample_rooms_variant as Array).size()
+	print("[BIN] sample: total_sqft_bin=%s footprint_bin=%s rooms=%d" % [
+		str(first_dict.get("total_m2_bin", first_dict.get("total_sqft_bin", -1))),
+		str(first_dict.get("footprint_bin", -1)),
+		sample_rooms
+	])
 static func apply_binning(instances: Array, edges: Dictionary) -> void:
     for prog in instances:
         _bin_program(prog, edges)
@@ -515,55 +573,72 @@ static func _program_to_dict(prog) -> Dictionary:
     return result
 
 static func _build_schema(programs: Array, edges: Dictionary) -> Dictionary:
-    var room_types := {}
-    var count_max := {}
-    var adj_labels := {}
+	var room_types := {}
+	var count_max := {}
+	var adj_labels := {}
 
-    for prog in programs:
-        if typeof(prog) != TYPE_DICTIONARY:
-            continue
-        var dict_prog: Dictionary = prog
-        var counts: Dictionary = dict_prog.get("room_counts", {})
-        for t in counts.keys():
-            room_types[t] = true
-            var c := int(counts[t])
-            var prev := int(count_max.get(t, 0))
-            if c > prev:
-                count_max[t] = c
-        for pair in dict_prog.get("adj_pairs", []):
-            if pair is Dictionary:
-                var label := String(pair.get("pair", ""))
-                if label != "":
-                    adj_labels[label] = true
+	for prog in programs:
+		if typeof(prog) != TYPE_DICTIONARY:
+			continue
+		var dict_prog: Dictionary = prog
+		var counts: Dictionary = dict_prog.get("room_counts", {})
+		for t in counts.keys():
+			room_types[t] = true
+			var c := int(counts[t])
+			var prev := int(count_max.get(t, 0))
+			if c > prev:
+				count_max[t] = c
+		for pair in dict_prog.get("adj_pairs", []):
+			if pair is Dictionary:
+				var label := String(pair.get("pair", ""))
+				if label != "":
+					adj_labels[label] = true
 
-    var room_type_list: Array = room_types.keys()
-    room_type_list.sort()
-    var adj_list: Array = adj_labels.keys()
-    adj_list.sort()
+	var room_type_list: Array = room_types.keys()
+	room_type_list.sort()
+	var adj_list: Array = adj_labels.keys()
+	adj_list.sort()
 
-    var schema := {
-        "total_m2_edges": edges.get("total_m2_edges", PackedFloat64Array()),
-        "footprint_w_edges": edges.get("footprint_w_edges", PackedFloat64Array()),
-        "footprint_d_edges": edges.get("footprint_d_edges", PackedFloat64Array()),
-        "room_area_edges": edges.get("room_area_edges", PackedFloat64Array()),
-        "aspect_edges": edges.get("aspect_edges", PackedFloat64Array()),
-        "room_types": room_type_list,
-        "adj_pairs": adj_list,
-        "count_max_by_type": count_max,
-        "adj_type_labels": ["open", "door"],
-        "exist_labels": [0, 1],
-        "area_labels": {},
-        "aspect_labels": {},
-    }
+	var schema := {
+		"total_m2_edges": edges.get("total_m2_edges", PackedFloat64Array()),
+		"footprint_w_edges": edges.get("footprint_w_edges", PackedFloat64Array()),
+		"footprint_d_edges": edges.get("footprint_d_edges", PackedFloat64Array()),
+		"room_area_edges": edges.get("room_area_edges", PackedFloat64Array()),
+		"aspect_edges": edges.get("aspect_edges", PackedFloat64Array()),
+		"room_types": room_type_list,
+		"adj_pairs": adj_list,
+		"count_max_by_type": count_max,
+		"adj_type_labels": ["open", "door"],
+		"exist_labels": [0, 1],
+		"area_labels": {},
+		"aspect_labels": {},
+	}
+	schema["adj_pairs_count"] = adj_list.size()
+	var bin_edges_dict := {}
+	bin_edges_dict["total_sqft"] = schema.get("total_m2_edges", PackedFloat64Array())
+	var footprint_edges := PackedFloat64Array()
+	var w_edges_variant := schema.get("footprint_w_edges", PackedFloat64Array())
+	if w_edges_variant is PackedFloat64Array:
+		var w_edges: PackedFloat64Array = w_edges_variant
+		for i in range(w_edges.size()):
+			footprint_edges.append(w_edges[i])
+	var d_edges_variant := schema.get("footprint_d_edges", PackedFloat64Array())
+	if d_edges_variant is PackedFloat64Array:
+		var d_edges: PackedFloat64Array = d_edges_variant
+		for i in range(d_edges.size()):
+			footprint_edges.append(d_edges[i])
+	bin_edges_dict["footprint"] = footprint_edges
+	bin_edges_dict["area"] = schema.get("room_area_edges", PackedFloat64Array())
+	bin_edges_dict["aspect"] = schema.get("aspect_edges", PackedFloat64Array())
+	schema["bin_edges"] = bin_edges_dict
 
-    var area_edges: PackedFloat64Array = schema["room_area_edges"]
-    var aspect_edges: PackedFloat64Array = schema["aspect_edges"]
-    for t in room_type_list:
-        schema["area_labels"][t] = _labels_from_edges("%s_area" % t, area_edges)
-        schema["aspect_labels"][t] = _labels_from_edges("%s_aspect" % t, aspect_edges)
+	var area_edges: PackedFloat64Array = schema["room_area_edges"]
+	var aspect_edges: PackedFloat64Array = schema["aspect_edges"]
+	for t in room_type_list:
+		schema["area_labels"][t] = _labels_from_edges("%s_area" % t, area_edges)
+		schema["aspect_labels"][t] = _labels_from_edges("%s_aspect" % t, aspect_edges)
 
-    return schema
-
+	return schema
 static func save_binned_corpus(path: String, binning: Dictionary) -> void:
     var payload := {
         "schema": binning.get("schema", {}),
@@ -751,17 +826,23 @@ static func _collect_room_aspect(instances: Array) -> Array:
     return out
 
 static func _labels_from_edges(name: String, edges: PackedFloat64Array) -> Array:
-    if edges.is_empty():
-        return ["%s_any" % name]
-    var labels: Array = []
-    var previous := float(edges[0])
-    labels.append("%s<=%.2f" % [name, float(edges[0])])
-    for i in range(1, edges.size()):
-        var upper := float(edges[i])
-        labels.append("%.2f<%s<=%.2f" % [previous, name, upper])
-        previous = upper
-    labels.append("%s>%.2f" % [name, float(edges[edges.size() - 1])])
-    return labels
+	if edges.is_empty():
+		return ["%s_any" % name]
+	var labels: Array = []
+	var previous := float(edges[0])
+	labels.append("%s<=%.2f" % [name, float(edges[0])])
+	for i in range(1, edges.size()):
+		var upper := float(edges[i])
+		labels.append("%.2f<%s<=%.2f" % [previous, name, upper])
+		previous = upper
+	labels.append("%s>%.2f" % [name, float(edges[edges.size() - 1])])
+	return labels
+static func _edge_count(value) -> int:
+	if value is PackedFloat64Array:
+		return (value as PackedFloat64Array).size()
+	if value is Array:
+		return (value as Array).size()
+	return 0
 
 static func _bin_index(value: float, edges: PackedFloat64Array) -> int:
     for i in range(edges.size()):

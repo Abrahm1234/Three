@@ -1,6 +1,8 @@
 extends Node
 class_name ProgramBN
 
+const DEBUG_VERIFY := true
+
 const RandomCtx := preload("res://addons/res_layout3d/core/RandomCtx.gd")
 const TrainingData := preload("res://addons/res_layout3d/data/TrainingData.gd")
 
@@ -54,6 +56,8 @@ func configure_rng(ctx: RandomCtx) -> void:
 
 func configure_from_schema(s: Dictionary) -> void:
 	schema_edges = s.duplicate(true)
+	if DEBUG_VERIFY:
+		print("[BN] configure_from_schema: schema_keys=%d" % s.keys().size())
 
 func _rng() -> RandomNumberGenerator:
 	return rng_ctx.rng if rng_ctx != null else RandomNumberGenerator.new()
@@ -164,42 +168,63 @@ func _build_structure_from_data(instances: Array) -> void:
 			node.parents = []
 		nodes[node.name] = node
 		adj_node_pairs[node.name] = label
+	if DEBUG_VERIFY:
+		var edge_count := 0
+		for node_name in nodes.keys():
+			var node_ref: BNNode = nodes[node_name]
+			edge_count += node_ref.parents.size()
+		print("[BN] prepared: nodes=%d edges=%d schema_loaded=%s" % [nodes.size(), edge_count, str(not schema_edges.is_empty())])
 func _learn_parameters(instances: Array) -> void:
 	for node_name in nodes.keys():
 		var node: BNNode = nodes[node_name]
 		var counts := {}  # key -> {value -> count}
-		
+
 		for inst in instances:
 			if not (inst is TrainingData.ProgramInstance):
 				continue
 			var prog: TrainingData.ProgramInstance = inst
-			
-			# Extract parent values
+
 			var parent_vals := {}
 			for parent in node.parents:
 				parent_vals[parent] = _extract_feature(prog, parent)
-			
+
 			var key := node._cpt_key(parent_vals)
 			if not counts.has(key):
 				counts[key] = {}
-			
+
 			var value = _extract_feature(prog, node_name)
 			if not counts[key].has(value):
 				counts[key][value] = 0
 			counts[key][value] += 1
-		
-		# Convert counts to probabilities
+
 		for key in counts.keys():
 			var total := 0
 			for v in counts[key].keys():
 				total += counts[key][v]
-			
+
 			var probs: Array = []
 			for domain_val in node.domain:
 				var count: int = counts[key].get(domain_val, 0)
 				probs.append(float(count) / max(1, total))
-			
+
 			node.cpt[key] = probs
+	if DEBUG_VERIFY:
+		var row_count := 0
+		for node_name in nodes.keys():
+			var node_ref: BNNode = nodes[node_name]
+			row_count += node_ref.cpt.size()
+		print("[BN] trained: instances=%d cpt_rows=%d nodes=%d" % [instances.size(), row_count, nodes.size()])
+func debug_dump_node(name: String) -> void:
+	if not DEBUG_VERIFY:
+		return
+	if not nodes.has(name):
+		print("[BN] dump: missing node: %s" % name)
+		return
+	var node: BNNode = nodes[name]
+	var keys := node.cpt.keys()
+	var first_key := keys[0] if keys.size() > 0 else ""
+	var sample := node.cpt.get(first_key, [])
+	print("[BN] node=%s rows=%d sample_row=%s" % [name, node.cpt.size(), str(sample)])
 
 func _extract_feature(prog: TrainingData.ProgramInstance, feature: String) -> Variant:
 	if prog == null:
