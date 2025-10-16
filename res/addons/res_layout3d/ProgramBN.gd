@@ -205,22 +205,22 @@ func _extract_feature(prog: TrainingData.ProgramInstance, feature: String) -> Va
 		return null
 	match feature:
 		"total_m2_bin":
-			return int(prog.get("total_m2_bin", prog.get("total_sqft_bin", 0)))
+			return int(prog.total_m2_bin if prog.total_m2_bin != -1 else prog.total_sqft_bin)
 		"footprint_bin":
-			return int(prog.get("footprint_bin", 0))
+			return int(prog.footprint_bin)
 		"bedrooms":
 			return _room_count(prog, "Bedroom")
 		"bathrooms":
 			return _room_count(prog, "Bathroom")
 		_:
 			if feature.ends_with("_count_bin"):
-				return int(prog.get("room_count_bins", {}).get(feature, prog.get(feature, 0)))
+				return int(prog.room_count_bins.get(feature, 0))
 			if feature.ends_with("_exists"):
-				return bool(prog.get("room_exists", {}).get(feature, prog.get(feature, false)))
+				return bool(prog.room_exists.get(feature, false))
 			if feature.begins_with("adj_"):
 				var label := String(adj_node_pairs.get(feature, ""))
 				return _adjacency_value(prog, label)
-			return prog.get(feature, null)
+			return null
 func _build_default_structure() -> void:
 	# Fallback if no training data
 	nodes.clear()
@@ -614,8 +614,8 @@ static func _collect_unique_counts(instances: Array, room_type: String) -> Array
 		if not (inst is TrainingData.ProgramInstance):
 			continue
 		var prog: TrainingData.ProgramInstance = inst
-		var counts: Dictionary = prog.get("room_counts", {})
-		var count := int(counts.get(room_type, prog.get(room_type, 0)))
+		var counts: Dictionary = prog.room_counts
+		var count := int(counts.get(room_type, _room_count(prog, room_type)))
 		values[count] = true
 	var result: Array = []
 	for k in values.keys():
@@ -629,7 +629,7 @@ static func _collect_unique_adj_pair_labels(instances: Array) -> Array[String]:
 		if not (inst is TrainingData.ProgramInstance):
 			continue
 		var prog: TrainingData.ProgramInstance = inst
-		for pair in prog.get("adj_pairs", []):
+		for pair in prog.adj_pairs:
 			if not (pair is Dictionary):
 				continue
 			var label := String(pair.get("pair", ""))
@@ -646,13 +646,18 @@ static func _adj_node_name(label: String) -> String:
 	return "adj_%s" % label.replace("|", "_")
 
 static func _room_count(prog: TrainingData.ProgramInstance, room_type: String) -> int:
-	var counts: Dictionary = prog.get("room_counts", {})
-	return int(counts.get(room_type, prog.get(room_type, 0)))
+	if prog.room_counts.has(room_type):
+		return int(prog.room_counts[room_type])
+	var n := 0
+	for rm in prog.rooms:
+		if rm.has("type") and String(rm.get("type")) == room_type:
+			n += 1
+	return n
 
 static func _adjacency_value(prog: TrainingData.ProgramInstance, label: String) -> String:
 	if label == "":
 		return "none"
-	for pair in prog.get("adj_pairs", []):
+	for pair in prog.adj_pairs:
 		if not (pair is Dictionary):
 			continue
 		if String(pair.get("pair", "")) == label:
