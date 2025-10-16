@@ -1077,15 +1077,15 @@ static func create_default() -> TrainingData:
 		{"a": "Bedroom", "b": "Utility", "type": "door"},  # Bonus to Attic Storage
 		]
 
-		# Add to dataset
-		data.single_story.append(plan_7)
+	# Add to dataset
+	data.single_story.append(plan_7)
 
-		var single_count := data.single_story.size()
-		var two_count := data.two_story.size()
-		var three_count := data.three_story.size()
-		print("✓ Training data created: %d single-story, %d two-story, %d three-story" % [single_count, two_count, three_count])
+	var single_count := data.single_story.size()
+	var two_count := data.two_story.size()
+	var three_count := data.three_story.size()
+	print("✓ Training data created: %d single-story, %d two-story, %d three-story" % [single_count, two_count, three_count])
 
-		return data
+	return data
 # ==============================================================================
 # Corpus binning utilities
 # ==============================================================================
