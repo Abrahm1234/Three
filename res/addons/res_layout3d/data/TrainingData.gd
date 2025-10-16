@@ -502,12 +502,26 @@ static func _prog_footprint(prog) -> Vector2:
         if dd != null:
             depth = float(dd)
     else:
-        var w_val := prog.get("footprint_w")
-        if w_val != null:
-            width = float(w_val)
-        var d_val := prog.get("footprint_d")
-        if d_val != null:
-            depth = float(d_val)
+        var w_val: float = 0.0
+        var w_variant: Variant = prog.get("footprint_w")
+        if w_variant != null:
+            w_val = float(w_variant)
+        elif prog.footprint is Vector2i:
+            w_val = float((prog.footprint as Vector2i).x)
+        elif prog.footprint is Vector2:
+            w_val = (prog.footprint as Vector2).x
+
+        var d_val: float = 0.0
+        var d_variant: Variant = prog.get("footprint_d")
+        if d_variant != null:
+            d_val = float(d_variant)
+        elif prog.footprint is Vector2i:
+            d_val = float((prog.footprint as Vector2i).y)
+        elif prog.footprint is Vector2:
+            d_val = (prog.footprint as Vector2).y
+
+        width = w_val
+        depth = d_val
     return Vector2(width, depth)
 
 
