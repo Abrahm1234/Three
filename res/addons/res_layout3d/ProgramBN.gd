@@ -220,7 +220,7 @@ func _build_structure_from_data(instances: Array) -> void:
 		var exist_node := BNNode.new()
 		exist_node.name = "adj_%s_exist" % label
 		exist_node.domain = [0, 1]
-		var parts := label.split("|")
+		var parts: PackedStringArray = label.split("|", false)
 		if parts.size() == 2:
 				exist_node.parents = ["%s_exists" % parts[0], "%s_exists" % parts[1]]
 		nodes[exist_node.name] = exist_node
