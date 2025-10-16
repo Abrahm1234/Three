@@ -297,8 +297,15 @@ func _ready() -> void:
 	
 	var TrainingDataClass = load("res://addons/res_layout3d/data/TrainingData.gd")
 	var training_data = TrainingDataClass.create_default()
+	var corpus: Array = []
+	corpus.append_array(training_data.single_story)
+	corpus.append_array(training_data.two_story)
+	corpus.append_array(training_data.three_story)
+	var schema := TrainingDataClass.bin_corpus(corpus)
+	if bn and bn.has_method("configure_from_schema"):
+		bn.configure_from_schema(schema)
 	if bn and bn.has_method("train"):
-		bn.train(training_data, 1)
+		bn.train(training_data, 1, schema)
 		print("✓ Bayesian Network trained with %d instances" % training_data.single_story.size())
 	
 	w_access.value_changed.connect(func(_v): _apply_weights())

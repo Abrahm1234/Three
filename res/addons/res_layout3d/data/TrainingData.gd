@@ -3,18 +3,22 @@ class_name TrainingData
 
 ## Represents a single training example for the Bayesian network
 class ProgramInstance:
-	var total_sqft: float
-	var footprint: Vector2i
-	var floors: int
-	var bedrooms: int
-	var bathrooms: int
-	var rooms: Array[Dictionary] = []  # {type:String, area:float, aspect:float, floor:int}
-	var adjacencies: Array[Dictionary] = []  # {a:String, b:String, type:String}
-	var total_sqft_bin: int = -1
-	var footprint_w_bin: int = -1
-	var footprint_d_bin: int = -1
-	var footprint_bin: int = -1
-	var adj_pairs: Array[Dictionary] = []
+var total_sqft: float
+var footprint: Vector2i
+var floors: int
+var bedrooms: int
+var bathrooms: int
+var rooms: Array[Dictionary] = []  # {type:String, area:float, aspect:float, floor:int}
+var adjacencies: Array[Dictionary] = []  # {a:String, b:String, type:String}
+var total_sqft_bin: int = -1 # legacy name (m^2)
+var total_m2_bin: int = -1
+var footprint_w_bin: int = -1
+var footprint_d_bin: int = -1
+var footprint_bin: int = -1
+var room_counts: Dictionary = {}
+var room_exists: Dictionary = {}
+var room_count_bins: Dictionary = {}
+var adj_pairs: Array[Dictionary] = []
 
 ## Collection of training instances
 var single_story: Array = []
@@ -1140,52 +1144,57 @@ static func default_binning_config() -> Dictionary:
 	}
 
 static func _prepare_edges(instances: Array, cfg: Dictionary) -> Dictionary:
-	var method := String(cfg.get("method", "fixed"))
-	var edges := {}
-	if method == "fixed":
-		edges.sqft = cfg.get("sqft_edges", PackedFloat64Array())
-		edges.foot_w = cfg.get("foot_w_edges", PackedFloat64Array())
-		edges.foot_d = cfg.get("foot_d_edges", PackedFloat64Array())
-		edges.room_area = cfg.get("room_area_edges", PackedFloat64Array())
-		edges.aspect = cfg.get("aspect_edges", PackedFloat64Array())
-		return edges
+var method := String(cfg.get("method", "fixed"))
+var edges: Dictionary = {}
+if method == "fixed":
+edges["total_m2_edges"] = cfg.get("sqft_edges", PackedFloat64Array())
+edges["footprint_w_edges"] = cfg.get("foot_w_edges", PackedFloat64Array())
+edges["footprint_d_edges"] = cfg.get("foot_d_edges", PackedFloat64Array())
+edges["room_area_edges"] = cfg.get("room_area_edges", PackedFloat64Array())
+edges["aspect_edges"] = cfg.get("aspect_edges", PackedFloat64Array())
+return edges
 
-	edges.sqft = _quantile_edges(_collect_total_m2(instances), int(cfg.get("n_bins_sqft", 5)))
-	edges.foot_w = _quantile_edges(_collect_foot_dim(instances, "w"), int(cfg.get("n_bins_foot_w", 6)))
-	edges.foot_d = _quantile_edges(_collect_foot_dim(instances, "d"), int(cfg.get("n_bins_foot_d", 6)))
-	edges.room_area = _quantile_edges(_collect_room_area(instances), int(cfg.get("n_bins_room_area", 7)))
-	edges.aspect = _quantile_edges(_collect_room_aspect(instances), int(cfg.get("n_bins_aspect", 6)))
-	return edges
+edges["total_m2_edges"] = _quantile_edges(_collect_total_m2(instances), int(cfg.get("n_bins_sqft", 5)))
+edges["footprint_w_edges"] = _quantile_edges(_collect_foot_dim(instances, "w"), int(cfg.get("n_bins_foot_w", 6)))
+edges["footprint_d_edges"] = _quantile_edges(_collect_foot_dim(instances, "d"), int(cfg.get("n_bins_foot_d", 6)))
+edges["room_area_edges"] = _quantile_edges(_collect_room_area(instances), int(cfg.get("n_bins_room_area", 7)))
+edges["aspect_edges"] = _quantile_edges(_collect_room_aspect(instances), int(cfg.get("n_bins_aspect", 6)))
+return edges
+
+static func apply_binning(instances: Array, edges: Dictionary) -> void:
+for prog in instances:
+_bin_program(prog, edges)
 
 static func _bin_program(prog, edges: Dictionary) -> void:
-	if prog == null:
-		return
-	var total_m2 := _prog_total_m2(prog)
-	var footprint := _prog_footprint(prog)
-	var foot_w := float(footprint.x)
-	var foot_d := float(footprint.y)
+if prog == null:
+return
+var total_m2 := _prog_total_m2(prog)
+var footprint := _prog_footprint(prog)
+var foot_w := float(footprint.x)
+var foot_d := float(footprint.y)
 
-	var sqft_edges: PackedFloat64Array = edges.get("sqft", PackedFloat64Array())
-	var w_edges: PackedFloat64Array = edges.get("foot_w", PackedFloat64Array())
-	var d_edges: PackedFloat64Array = edges.get("foot_d", PackedFloat64Array())
+var sqft_edges: PackedFloat64Array = edges.get("total_m2_edges", PackedFloat64Array())
+var w_edges: PackedFloat64Array = edges.get("footprint_w_edges", PackedFloat64Array())
+var d_edges: PackedFloat64Array = edges.get("footprint_d_edges", PackedFloat64Array())
 
-	var total_bin := _bin_index(total_m2, sqft_edges)
-	var w_bin := _bin_index(foot_w, w_edges)
-	var d_bin := _bin_index(foot_d, d_edges)
+var total_bin := _bin_index(total_m2, sqft_edges)
+var w_bin := _bin_index(foot_w, w_edges)
+var d_bin := _bin_index(foot_d, d_edges)
 
-	_set_field(prog, "total_sqft_bin", total_bin)
-	_set_field(prog, "footprint_w_bin", w_bin)
-	_set_field(prog, "footprint_d_bin", d_bin)
-	var n_d_bins := d_edges.size() + 1
-	_set_field(prog, "footprint_bin", w_bin * n_d_bins + d_bin)
+_set_field(prog, "total_sqft_bin", total_bin)
+_set_field(prog, "total_m2_bin", total_bin)
+_set_field(prog, "footprint_w_bin", w_bin)
+_set_field(prog, "footprint_d_bin", d_bin)
+var n_d_bins := d_edges.size() + 1
+_set_field(prog, "footprint_bin", w_bin * n_d_bins + d_bin)
 
-	var rooms: Array = prog.get("rooms", [])
-	var room_area_edges: PackedFloat64Array = edges.get("room_area", PackedFloat64Array())
-	var aspect_edges: PackedFloat64Array = edges.get("aspect", PackedFloat64Array())
-	var id_to_idx := {}
-	var label_to_indices := {}
-	var label_cycle := {}
-	var label_counts := {}
+var rooms: Array = prog.get("rooms", [])
+var room_area_edges: PackedFloat64Array = edges.get("room_area_edges", PackedFloat64Array())
+var aspect_edges: PackedFloat64Array = edges.get("aspect_edges", PackedFloat64Array())
+var id_to_idx := {}
+var label_to_indices := {}
+var label_cycle := {}
+var label_counts := {}
 	for i in range(rooms.size()):
 		var room: Dictionary = rooms[i]
 		var room_type := String(room.get("type", "Room"))
@@ -1233,13 +1242,30 @@ static func _bin_program(prog, edges: Dictionary) -> void:
 	for i in range(rooms.size()):
 		for j in range(i + 1, rooms.size()):
 			var key := "%d|%d" % [i, j]
+			var type_a := String(rooms[i].get("type", "Room"))
+			var type_b := String(rooms[j].get("type", "Room"))
+			var pair_label := _room_pair_label(type_a, type_b)
 			if adj_lookup.has(key):
 				var kind := String(adj_lookup[key])
-				var adj_type := AdjType.DOOR if kind == "door" else AdjType.OPEN
-				adj_pairs.append({"a": i, "b": j, "exist": 1, "type": adj_type})
+				var adj_type := "door" if kind == "door" else "open"
+				adj_pairs.append({"a": i, "b": j, "pair": pair_label, "exist": 1, "type": adj_type})
 			else:
-				adj_pairs.append({"a": i, "b": j, "exist": 0, "type": AdjType.OPEN})
+				adj_pairs.append({"a": i, "b": j, "pair": pair_label, "exist": 0, "type": "none"})
 	_set_field(prog, "adj_pairs", adj_pairs)
+
+	var counts := {}
+	var exists := {}
+	var count_bins := {}
+	for room_type in label_counts.keys():
+		var count := int(label_counts[room_type])
+		counts[room_type] = count
+		var exists_key := "%s_exists" % room_type
+		exists[exists_key] = count > 0
+		var count_key := "%s_count_bin" % room_type
+		count_bins[count_key] = _count_to_bin(count)
+	_set_field(prog, "room_counts", counts)
+	_set_field(prog, "room_exists", exists)
+	_set_field(prog, "room_count_bins", count_bins)
 
 static func _resolve_room_index(edge: Dictionary, field: String, id_to_idx: Dictionary, label_to_indices: Dictionary, label_cycle: Dictionary) -> int:
 	var label := String(edge.get(field, ""))
@@ -1257,10 +1283,80 @@ static func _resolve_room_index(edge: Dictionary, field: String, id_to_idx: Dict
 	return -1
 
 static func _set_field(target, name: String, value) -> void:
-	if typeof(target) == TYPE_DICTIONARY:
-		target[name] = value
-	else:
-		target.set(name, value)
+if typeof(target) == TYPE_DICTIONARY:
+target[name] = value
+else:
+target.set(name, value)
+
+static func _count_to_bin(count: int) -> int:
+if count <= 0:
+return 0
+if count == 1:
+return 1
+if count == 2:
+return 2
+return 3
+
+static func _room_pair_label(a: String, b: String) -> String:
+var ordered := [a, b]
+ordered.sort()
+return "%s|%s" % [ordered[0], ordered[1]]
+
+static func _program_to_dict(prog) -> Dictionary:
+	var result := {}
+	if prog == null:
+		return result
+	result["floors"] = prog.get("floors", 1)
+	var room_counts: Dictionary = prog.get("room_counts", {})
+	result["bedrooms"] = prog.get("bedrooms", room_counts.get("Bedroom", 0))
+	result["bathrooms"] = prog.get("bathrooms", room_counts.get("Bathroom", 0))
+	result["total_m2"] = _prog_total_m2(prog)
+	result["total_m2_bin"] = prog.get("total_m2_bin", prog.get("total_sqft_bin", -1))
+	var fp := _prog_footprint(prog)
+	result["footprint"] = {"w": fp.x, "d": fp.y}
+	result["footprint_w_bin"] = prog.get("footprint_w_bin", -1)
+	result["footprint_d_bin"] = prog.get("footprint_d_bin", -1)
+	result["footprint_bin"] = prog.get("footprint_bin", -1)
+	result["room_counts"] = room_counts
+	result["room_exists"] = prog.get("room_exists", {})
+	result["room_count_bins"] = prog.get("room_count_bins", {})
+	var rooms_out: Array = []
+	for room in prog.get("rooms", []):
+		if room is Dictionary:
+			rooms_out.append(room.duplicate())
+		else:
+			rooms_out.append(room)
+	result["rooms"] = rooms_out
+	var adj_out: Array = []
+	for adj in prog.get("adj_pairs", []):
+		if adj is Dictionary:
+			adj_out.append(adj.duplicate())
+		else:
+			adj_out.append(adj)
+	result["adj_pairs"] = adj_out
+	return result
+result["floors"] = prog.get("floors", 1)
+result["bedrooms"] = prog.get("bedrooms", prog.get("room_counts", {}).get("Bedroom", 0))
+result["bathrooms"] = prog.get("bathrooms", prog.get("room_counts", {}).get("Bathroom", 0))
+result["total_m2"] = _prog_total_m2(prog)
+result["total_m2_bin"] = prog.get("total_m2_bin", prog.get("total_sqft_bin", -1))
+var fp := _prog_footprint(prog)
+result["footprint"] = {"w": fp.x, "d": fp.y}
+result["footprint_w_bin"] = prog.get("footprint_w_bin", -1)
+result["footprint_d_bin"] = prog.get("footprint_d_bin", -1)
+result["footprint_bin"] = prog.get("footprint_bin", -1)
+result["room_counts"] = prog.get("room_counts", {})
+result["room_exists"] = prog.get("room_exists", {})
+result["room_count_bins"] = prog.get("room_count_bins", {})
+var rooms_out: Array = []
+for room in prog.get("rooms", []):
+rooms_out.append(room.duplicate())
+result["rooms"] = rooms_out
+var adj_out: Array = []
+for adj in prog.get("adj_pairs", []):
+adj_out.append(adj.duplicate())
+result["adj_pairs"] = adj_out
+return result
 
 static func _prog_total_m2(prog) -> float:
 	if prog == null:
@@ -1356,12 +1452,23 @@ static func _collect_room_area(instances: Array) -> Array:
 	return out
 
 static func _collect_room_aspect(instances: Array) -> Array:
-	var out: Array = []
+var out: Array = []
+for prog in instances:
+var rooms: Array = prog.get("rooms", [])
+for room in rooms:
+out.append(_room_aspect(room))
+return out
+
+static func save_binned_corpus(path: String, instances: Array) -> void:
+	var payload := {"instances": []}
 	for prog in instances:
-		var rooms: Array = prog.get("rooms", [])
-		for room in rooms:
-			out.append(_room_aspect(room))
-	return out
+		payload["instances"].append(_program_to_dict(prog))
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		push_error("Unable to open %s for writing" % path)
+		return
+	file.store_string(JSON.stringify(payload, "	"))
+	file.close()
 
 static func _bin_index(value: float, edges: PackedFloat64Array) -> int:
 	for i in range(edges.size()):
