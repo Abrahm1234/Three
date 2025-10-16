@@ -50,10 +50,10 @@ var P_beds := {
 var P_baths_given_beds := {2: 1, 3: 2, 4: 3, 5: 3}
 
 func configure_rng(ctx: RandomCtx) -> void:
-rng_ctx = ctx
+	rng_ctx = ctx
 
 func configure_from_schema(s: Dictionary) -> void:
-schema_edges = s.duplicate(true)
+	schema_edges = s.duplicate(true)
 
 func _rng() -> RandomNumberGenerator:
 	return rng_ctx.rng if rng_ctx != null else RandomNumberGenerator.new()
@@ -202,25 +202,25 @@ func _learn_parameters(instances: Array) -> void:
 
 func _extract_feature(prog: TrainingData.ProgramInstance, feature: String) -> Variant:
 	if prog == null:
-	return null
+		return null
 	match feature:
-	"total_m2_bin":
-	return int(prog.get("total_m2_bin", prog.get("total_sqft_bin", 0)))
-	"footprint_bin":
-	return int(prog.get("footprint_bin", 0))
-	"bedrooms":
-	return _room_count(prog, "Bedroom")
-	"bathrooms":
-	return _room_count(prog, "Bathroom")
-	_:
-	if feature.ends_with("_count_bin"):
-	return int(prog.get("room_count_bins", {}).get(feature, prog.get(feature, 0)))
-	if feature.ends_with("_exists"):
-	return bool(prog.get("room_exists", {}).get(feature, prog.get(feature, false)))
-	if feature.begins_with("adj_"):
-	var label := String(adj_node_pairs.get(feature, ""))
-	return _adjacency_value(prog, label)
-	return prog.get(feature, null)
+		"total_m2_bin":
+			return int(prog.get("total_m2_bin", prog.get("total_sqft_bin", 0)))
+		"footprint_bin":
+			return int(prog.get("footprint_bin", 0))
+		"bedrooms":
+			return _room_count(prog, "Bedroom")
+		"bathrooms":
+			return _room_count(prog, "Bathroom")
+		_:
+			if feature.ends_with("_count_bin"):
+				return int(prog.get("room_count_bins", {}).get(feature, prog.get(feature, 0)))
+			if feature.ends_with("_exists"):
+				return bool(prog.get("room_exists", {}).get(feature, prog.get(feature, false)))
+			if feature.begins_with("adj_"):
+				var label := String(adj_node_pairs.get(feature, ""))
+				return _adjacency_value(prog, label)
+			return prog.get(feature, null)
 func _build_default_structure() -> void:
 	# Fallback if no training data
 	nodes.clear()
@@ -252,8 +252,8 @@ func _sample_from_bn(req: Dictionary) -> ArchitecturalProgram:
 		sampled["bathrooms"] = int(req["bathrooms"])
 	if req.has("sq_m2"):
 		var sqft := float(req["sq_m2"])
-		var edges: PackedFloat64Array = schema_edges.get("total_m2_edges", PackedFloat64Array())
-		sampled["total_m2_bin"] = _bin_index_for_value(sqft, edges)
+		var area_edges: PackedFloat64Array = schema_edges.get("total_m2_edges", PackedFloat64Array())
+		sampled["total_m2_bin"] = _bin_index_for_value(sqft, area_edges)
 
 	# Sample ALL nodes in topological order
 	for node_name in order:
@@ -320,10 +320,10 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 	var beds := int(sampled.get("bedrooms", 3))
 	var baths := int(sampled.get("bathrooms", 2))
 	var floors := int(req.get("floors", 1))  # ✅ MUST be defined HERE at the top
-	var edges: PackedFloat64Array = schema_edges.get("total_m2_edges", PackedFloat64Array())
+	var area_edges: PackedFloat64Array = schema_edges.get("total_m2_edges", PackedFloat64Array())
 	var requested_sqft := float(req.get("sq_m2", -1.0))
-	var sqft_bin := int(sampled.get("total_m2_bin", _bin_index_for_value(requested_sqft, edges) if requested_sqft >= 0.0 else 0))
-	var sqft := requested_sqft if requested_sqft >= 0.0 else _bin_midpoint(sqft_bin, edges)
+	var sqft_bin := int(sampled.get("total_m2_bin", _bin_index_for_value(requested_sqft, area_edges) if requested_sqft >= 0.0 else 0))
+	var sqft := requested_sqft if requested_sqft >= 0.0 else _bin_midpoint(sqft_bin, area_edges)
 	if sqft <= 0.0:
 		sqft = 160.0
 
@@ -568,10 +568,10 @@ func _gauss_logpdf(x: float, mu: float, sigma: float) -> float:
 
 # Adjacency prior: probability that two room types should be adjacent
 func p_adj(a: String, b: String) -> float:
-var sorted := [a.to_lower(), b.to_lower()]
-sorted.sort()
-var k := "%s|%s" % [sorted[0], sorted[1]]
-var priors := {
+	var sorted := [a.to_lower(), b.to_lower()]
+	sorted.sort()
+	var k := "%s|%s" % [sorted[0], sorted[1]]
+	var priors := {
 		"entry|living": 0.95,
 		"kitchen|living": 0.9,
 		"living|living": 0.1,
@@ -587,7 +587,7 @@ var priors := {
 		"kitchen|pantry": 0.8, # 🔥 NEW
 		"kitchen|laundry": 0.7,# 🔥 NEW
 	}
-return float(priors.get(k, 0.2))
+	return float(priors.get(k, 0.2))
 
 static func _bin_domain(edges: PackedFloat64Array) -> Array:
 	var count := edges.size() + 1
@@ -677,9 +677,9 @@ static func _bin_midpoint(bin_idx: int, edges: PackedFloat64Array) -> float:
 	return (lower + upper) * 0.5
 ## Extract all unique room types from training data
 func _extract_unique_room_types(instances: Array) -> Array[String]:
-var room_types := {}
-for inst in instances:
-if not (inst is TrainingData.ProgramInstance):
+	var room_types := {}
+	for inst in instances:
+		if not (inst is TrainingData.ProgramInstance):
 			continue
 		var prog: TrainingData.ProgramInstance = inst
 		for rm in prog.rooms:
