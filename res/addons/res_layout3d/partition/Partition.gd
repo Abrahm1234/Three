@@ -4,6 +4,7 @@ class_name Partition
 const Grid2D := preload("res://addons/res_layout3d/partition/Grid2D.gd")
 
 const MIN_ROOM := Vector2(2.0, 2.0)
+const TOUCH_EPS := 0.05
 
 @export var grid := Grid2D.new()
 @export var wall_thickness_m := 0.15
@@ -233,10 +234,10 @@ func _adjacent_pairs() -> Array:
 		for j in range(i + 1, rooms.size()):
 			var B := rooms[j].rect
 			var Be := B.position + B.size
-			if is_equal_approx(Ae.x, B.position.x):
+			if abs(Ae.x - B.position.x) <= TOUCH_EPS:
 				var y0 := max(A.position.y, B.position.y)
 				var y1 := min(Ae.y, Be.y)
-				if y1 - y0 > 0.0:
+				if y1 - y0 >= 0.4:
 					pairs.append({
 						"vert": true,
 						"a": i,
@@ -245,10 +246,10 @@ func _adjacent_pairs() -> Array:
 						"right_idx": j,
 						"span": Vector2(y0, y1),
 					})
-			elif is_equal_approx(Be.x, A.position.x):
+			elif abs(Be.x - A.position.x) <= TOUCH_EPS:
 				var y0b := max(A.position.y, B.position.y)
 				var y1b := min(Ae.y, Be.y)
-				if y1b - y0b > 0.0:
+				if y1b - y0b >= 0.4:
 					pairs.append({
 						"vert": true,
 						"a": i,
@@ -257,10 +258,10 @@ func _adjacent_pairs() -> Array:
 						"right_idx": i,
 						"span": Vector2(y0b, y1b),
 					})
-			if is_equal_approx(Ae.y, B.position.y):
+			if abs(Ae.y - B.position.y) <= TOUCH_EPS:
 				var x0 := max(A.position.x, B.position.x)
 				var x1 := min(Ae.x, Be.x)
-				if x1 - x0 > 0.0:
+				if x1 - x0 >= 0.4:
 					pairs.append({
 						"vert": false,
 						"a": i,
@@ -269,10 +270,10 @@ func _adjacent_pairs() -> Array:
 						"bottom_idx": j,
 						"span": Vector2(x0, x1),
 					})
-			elif is_equal_approx(Be.y, A.position.y):
+			elif abs(Be.y - A.position.y) <= TOUCH_EPS:
 				var x0b := max(A.position.x, B.position.x)
 				var x1b := min(Ae.x, Be.x)
-				if x1b - x0b > 0.0:
+				if x1b - x0b >= 0.4:
 					pairs.append({
 						"vert": false,
 						"a": i,
@@ -282,3 +283,56 @@ func _adjacent_pairs() -> Array:
 						"span": Vector2(x0b, x1b),
 					})
 	return pairs
+
+func enforce_required_adjacencies(prog: ArchitecturalProgram) -> void:
+	if prog == null:
+		return
+	var id_to_index := {}
+	for idx in range(prog.rooms.size()):
+		var rid := String(prog.rooms[idx].get("id", ""))
+		if rid == "":
+			continue
+		id_to_index[rid] = idx
+	for edge in prog.edges:
+		var a_idx := id_to_index.get(String(edge.get("a_id", "")), -1)
+		var b_idx := id_to_index.get(String(edge.get("b_id", "")), -1)
+		if a_idx < 0 or b_idx < 0:
+			continue
+		if a_idx >= rooms.size() or b_idx >= rooms.size():
+			continue
+		_slide_to_touch(a_idx, b_idx)
+
+func _slide_to_touch(a_idx: int, b_idx: int) -> void:
+	var ra := rooms[a_idx].rect
+	var rb := rooms[b_idx].rect
+	var gap_x := 0.0
+	if ra.position.x + ra.size.x < rb.position.x:
+		gap_x = rb.position.x - (ra.position.x + ra.size.x)
+	elif rb.position.x + rb.size.x < ra.position.x:
+		gap_x = ra.position.x - (rb.position.x + rb.size.x)
+	var gap_y := 0.0
+	if ra.position.y + ra.size.y < rb.position.y:
+		gap_y = rb.position.y - (ra.position.y + ra.size.y)
+	elif rb.position.y + rb.size.y < ra.position.y:
+		gap_y = ra.position.y - (rb.position.y + rb.size.y)
+	if gap_x <= TOUCH_EPS and gap_y <= TOUCH_EPS:
+		return
+	var target_rect := Rect2(rb.position, rb.size)
+	if gap_x <= gap_y:
+		if ra.position.x > rb.position.x:
+			target_rect.position.x += gap_x
+		else:
+			target_rect.position.x -= gap_x
+	else:
+		if ra.position.y > rb.position.y:
+			target_rect.position.y += gap_y
+		else:
+			target_rect.position.y -= gap_y
+	target_rect = grid.snap_rect(target_rect)
+	target_rect = _clamp_rect_to_footprint(target_rect)
+	if not footprint.encloses(target_rect):
+		return
+	if _overlaps_any(b_idx, target_rect, a_idx):
+		return
+	rooms[b_idx].rect = target_rect
+

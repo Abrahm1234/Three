@@ -4,14 +4,16 @@ class_name Doors
 const Partition := preload("res://addons/res_layout3d/partition/Partition.gd")
 
 const DOOR_W: float = 0.9
+const TOUCH_EPS := 0.02
+const MIN_SHARED := 0.4
 
 static func candidates(part: Partition) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
-	for edge in _adjacent_pairs(part):
-		var span: Vector2 = edge.get("span", Vector2.ZERO)
-		var length: float = span.y - span.x
-		if length >= DOOR_W + 0.2:
-			out.append(edge)
+        for edge in _adjacent_pairs(part):
+                var span: Vector2 = edge.get("span", Vector2.ZERO)
+                var length: float = span.y - span.x
+                if length >= max(DOOR_W, MIN_SHARED):
+                        out.append(edge)
 	return out
 
 static func access_graph(part: Partition) -> Dictionary:
@@ -25,19 +27,22 @@ static func access_graph(part: Partition) -> Dictionary:
 
 # Treat open-wall adjacencies as passable even if no door span is cut yet.
 static func access_graph_with_program(part: Partition, program) -> Dictionary:
-	var graph := access_graph(part)
-	var idx_by_label := {}
-	for i in range(part.rooms.size()):
-		idx_by_label[part.rooms[i].label] = i
-	for e in program.edges:
-		if String(e.get("kind", "")) != "open":
-			continue
-		var a := idx_by_label.get(String(e.get("a_id", "")), -1)
-		var b := idx_by_label.get(String(e.get("b_id", "")), -1)
-		if a >= 0 and b >= 0:
-			graph[a][b] = 1.0
-			graph[b][a] = 1.0
-	return graph
+        var graph := access_graph(part)
+        var id_to_index := {}
+        for idx in range(min(part.rooms.size(), program.rooms.size())):
+                var rid := String(program.rooms[idx].get("id", ""))
+                if rid == "":
+                        continue
+                id_to_index[rid] = idx
+        for e in program.edges:
+                if String(e.get("kind", "")) != "open":
+                        continue
+                var a := id_to_index.get(String(e.get("a_id", "")), -1)
+                var b := id_to_index.get(String(e.get("b_id", "")), -1)
+                if a >= 0 and b >= 0 and a < part.rooms.size() and b < part.rooms.size():
+                        graph[a][b] = 1.0
+                        graph[b][a] = 1.0
+        return graph
 
 static func access_graph_pairs(part: Partition, pairs: Array[Vector2i]) -> Dictionary:
 	var allow := {}
@@ -129,32 +134,32 @@ static func dists_from_labels(part: Partition, start_idx: int, allowed: Dictiona
 	return dist
 
 static func _adjacent_pairs(part: Partition) -> Array[Dictionary]:
-	var pairs: Array[Dictionary] = []
-	for i in range(part.rooms.size()):
-		var rect_a := part.rooms[i].rect
-		var a_end := rect_a.position + rect_a.size
-		for j in range(i + 1, part.rooms.size()):
-			var rect_b := part.rooms[j].rect
-			var b_end := rect_b.position + rect_b.size
+        var pairs: Array[Dictionary] = []
+        for i in range(part.rooms.size()):
+                var rect_a := part.rooms[i].rect
+                var a_end := rect_a.position + rect_a.size
+                for j in range(i + 1, part.rooms.size()):
+                        var rect_b := part.rooms[j].rect
+                        var b_end := rect_b.position + rect_b.size
 
-			if is_equal_approx(a_end.x, rect_b.position.x) or is_equal_approx(b_end.x, rect_a.position.x):
-				var y0 := max(rect_a.position.y, rect_b.position.y)
-				var y1 := min(a_end.y, b_end.y)
-				if y1 - y0 > 0.0:
-					pairs.append({
-						"a": i,
-						"b": j,
-						"vert": true,
-						"span": Vector2(y0, y1),
-					})
-			if is_equal_approx(a_end.y, rect_b.position.y) or is_equal_approx(b_end.y, rect_a.position.y):
-				var x0 := max(rect_a.position.x, rect_b.position.x)
-				var x1 := min(a_end.x, b_end.x)
-				if x1 - x0 > 0.0:
-					pairs.append({
-						"a": i,
-						"b": j,
-						"vert": false,
-						"span": Vector2(x0, x1),
-					})
-	return pairs
+                        if abs(a_end.x - rect_b.position.x) <= TOUCH_EPS or abs(b_end.x - rect_a.position.x) <= TOUCH_EPS:
+                                var y0 := max(rect_a.position.y, rect_b.position.y)
+                                var y1 := min(a_end.y, b_end.y)
+                                if y1 - y0 >= MIN_SHARED:
+                                        pairs.append({
+                                                "a": i,
+                                                "b": j,
+                                                "vert": true,
+                                                "span": Vector2(y0, y1),
+                                        })
+                        if abs(a_end.y - rect_b.position.y) <= TOUCH_EPS or abs(b_end.y - rect_a.position.y) <= TOUCH_EPS:
+                                var x0 := max(rect_a.position.x, rect_b.position.x)
+                                var x1 := min(a_end.x, b_end.x)
+                                if x1 - x0 >= MIN_SHARED:
+                                        pairs.append({
+                                                "a": i,
+                                                "b": j,
+                                                "vert": false,
+                                                "span": Vector2(x0, x1),
+                                        })
+        return pairs

@@ -3,6 +3,15 @@ class_name TrainingData
 
 const DEBUG_VERIFY := true
 
+static func _adj_key(a: String, b: String) -> String:
+    var a_low := a
+    var b_low := b
+    if a_low > b_low:
+        var tmp := a_low
+        a_low = b_low
+        b_low = tmp
+    return "%s|%s" % [a_low, b_low]
+
 ## Represents a single training example for the Bayesian network
 class ProgramInstance:
     extends RefCounted
@@ -210,6 +219,22 @@ static func bin_corpus(instances: Array, cfg: Dictionary = default_binning_confi
         exported.append(_program_to_dict(prog))
 
     var schema := _build_schema(exported, edges)
+    var adj_pairs_variant := schema.get("adj_pairs", [])
+    var adj_pairs: Array = []
+    if adj_pairs_variant is Array:
+        adj_pairs = adj_pairs_variant.duplicate()
+    for inst in exported:
+        if typeof(inst) != TYPE_DICTIONARY:
+            continue
+        var dict_inst: Dictionary = inst
+        for label in adj_pairs:
+            var exist_key := "adj_%s_exist" % label
+            var type_key := "adj_%s_type" % label
+            if not dict_inst.has(exist_key):
+                dict_inst[exist_key] = 0
+            if not dict_inst.has(type_key):
+                dict_inst[type_key] = "open"
+
     var result := {
         "schema": schema,
         "instances": exported,
@@ -234,14 +259,16 @@ static func _dbg_bins(schema: Dictionary, insts: Array) -> void:
     if edges_dict_variant is Dictionary:
         var edges_dict: Dictionary = edges_dict_variant
         total_bins = _edge_count(edges_dict.get("total_sqft"))
-        footprint_bins = _edge_count(edges_dict.get("footprint"))
+        var width_bins := _edge_count(edges_dict.get("width")) + 1
+        var depth_bins := _edge_count(edges_dict.get("depth")) + 1
+        footprint_bins = max(1, width_bins * depth_bins)
         area_bins = _edge_count(edges_dict.get("area"))
         aspect_bins = _edge_count(edges_dict.get("aspect"))
     else:
         total_bins = _edge_count(schema.get("total_m2_edges"))
-        var footprint_w_bins := _edge_count(schema.get("footprint_w_edges"))
-        var footprint_d_bins := _edge_count(schema.get("footprint_d_edges"))
-        footprint_bins = footprint_w_bins + footprint_d_bins
+        var footprint_w_bins := _edge_count(schema.get("footprint_w_edges")) + 1
+        var footprint_d_bins := _edge_count(schema.get("footprint_d_edges")) + 1
+        footprint_bins = max(1, footprint_w_bins * footprint_d_bins)
         area_bins = _edge_count(schema.get("room_area_edges"))
         aspect_bins = _edge_count(schema.get("aspect_edges"))
     var adj_pairs_count := int(schema.get("adj_pairs_count", 0))
@@ -266,10 +293,11 @@ static func _dbg_bins(schema: Dictionary, insts: Array) -> void:
     var sample_rooms_variant := first_dict.get("rooms", [])
     if sample_rooms_variant is Array:
         sample_rooms = (sample_rooms_variant as Array).size()
-    print("[BIN] sample: total_sqft_bin=%s footprint_bin=%s rooms=%d" % [
+    print("[BIN] sample: total_sqft_bin=%s footprint_bin=%s rooms=%d footprint_pair=%s" % [
         str(first_dict.get("total_m2_bin", first_dict.get("total_sqft_bin", -1))),
         str(first_dict.get("footprint_bin", -1)),
-        sample_rooms
+        sample_rooms,
+        str(first_dict.get("footprint_bin_pair", Vector2i.ZERO))
     ])
 static func apply_binning(instances: Array, edges: Dictionary) -> void:
     for prog in instances:
@@ -309,13 +337,16 @@ static func _bin_program(prog, edges: Dictionary) -> void:
     var total_bin := _bin_index(total_m2, sqft_edges)
     var w_bin := _bin_index(foot_w, w_edges)
     var d_bin := _bin_index(foot_d, d_edges)
+    var w_bin_count := w_edges.size() + 1
+    var d_bin_count := d_edges.size() + 1
+    var footprint_id := w_bin * d_bin_count + d_bin
 
     _set_field(prog, "total_sqft_bin", total_bin)
     _set_field(prog, "total_m2_bin", total_bin)
     _set_field(prog, "footprint_w_bin", w_bin)
     _set_field(prog, "footprint_d_bin", d_bin)
-    var n_d_bins := d_edges.size() + 1
-    _set_field(prog, "footprint_bin", w_bin * n_d_bins + d_bin)
+    _set_field(prog, "footprint_bin", footprint_id)
+    _set_field(prog, "footprint_bin_pair", Vector2i(w_bin, d_bin))
 
     var rooms: Array = []
     if prog is ProgramInstance:
@@ -403,15 +434,17 @@ static func _bin_program(prog, edges: Dictionary) -> void:
                 var kind := String(adj_lookup[key])
                 var adj_type := "door" if kind == "door" else "open"
                 adj_pairs.append({"a": i, "b": j, "pair": pair_label, "exist": 1, "type": adj_type})
-                var summary: Dictionary = pair_summary.get(pair_label, {"exist": false, "type": "none"})
+                var summary: Dictionary = pair_summary.get(pair_label, {"exist": false, "type": "open"})
                 summary["exist"] = true
-                if String(summary.get("type", "none")) == "none" or adj_type == "door":
-                    summary["type"] = adj_type
+                if adj_type == "door":
+                    summary["type"] = "door"
+                else:
+                    summary["type"] = summary.get("type", "open")
                 pair_summary[pair_label] = summary
             else:
-                adj_pairs.append({"a": i, "b": j, "pair": pair_label, "exist": 0, "type": "none"})
+                adj_pairs.append({"a": i, "b": j, "pair": pair_label, "exist": 0, "type": "open"})
                 if not pair_summary.has(pair_label):
-                    pair_summary[pair_label] = {"exist": false, "type": "none"}
+                    pair_summary[pair_label] = {"exist": false, "type": "open"}
 
     _set_field(prog, "adj_pairs", adj_pairs)
     _set_field(prog, "adj_summary", pair_summary)
@@ -491,6 +524,7 @@ static func _program_to_dict(prog) -> Dictionary:
         result["footprint_w_bin"] = inst.footprint_w_bin
         result["footprint_d_bin"] = inst.footprint_d_bin
         result["footprint_bin"] = inst.footprint_bin
+        result["footprint_bin_pair"] = Vector2i(inst.footprint_w_bin, inst.footprint_d_bin)
         result["room_counts"] = inst.room_counts.duplicate()
         result["room_exists"] = inst.room_exists.duplicate()
         result["room_count_bins"] = inst.room_count_bins.duplicate()
@@ -535,6 +569,7 @@ static func _program_to_dict(prog) -> Dictionary:
         result["footprint_w_bin"] = dict_prog.get("footprint_w_bin", -1)
         result["footprint_d_bin"] = dict_prog.get("footprint_d_bin", -1)
         result["footprint_bin"] = dict_prog.get("footprint_bin", -1)
+        result["footprint_bin_pair"] = dict_prog.get("footprint_bin_pair", Vector2i(dict_prog.get("footprint_w_bin", -1), dict_prog.get("footprint_d_bin", -1)))
         result["room_counts"] = dict_prog.get("room_counts", {})
         result["room_exists"] = dict_prog.get("room_exists", {})
         result["room_count_bins"] = dict_prog.get("room_count_bins", {})
@@ -593,6 +628,12 @@ static func _build_schema(programs: Array, edges: Dictionary) -> Dictionary:
                 var label := String(pair.get("pair", ""))
                 if label != "":
                     adj_labels[label] = true
+        var summary_variant := dict_prog.get("adj_summary", {})
+        if summary_variant is Dictionary:
+            var summary_dict: Dictionary = summary_variant
+            for label in summary_dict.keys():
+                if String(label) != "":
+                    adj_labels[String(label)] = true
 
     var room_type_list: Array = room_types.keys()
     room_type_list.sort()
@@ -614,23 +655,25 @@ static func _build_schema(programs: Array, edges: Dictionary) -> Dictionary:
         "aspect_labels": {},
     }
     schema["adj_pairs_count"] = adj_list.size()
-    var bin_edges_dict := {}
-    bin_edges_dict["total_sqft"] = schema.get("total_m2_edges", PackedFloat64Array())
-    var footprint_edges := PackedFloat64Array()
+    var bin_edges_dict := {
+        "total_sqft": schema.get("total_m2_edges", PackedFloat64Array()),
+        "width": schema.get("footprint_w_edges", PackedFloat64Array()),
+        "depth": schema.get("footprint_d_edges", PackedFloat64Array()),
+        "area": schema.get("room_area_edges", PackedFloat64Array()),
+        "aspect": schema.get("aspect_edges", PackedFloat64Array()),
+    }
+    schema["bin_edges"] = bin_edges_dict
+    var w_bins_count := 1
+    var d_bins_count := 1
     var w_edges_variant := schema.get("footprint_w_edges", PackedFloat64Array())
     if w_edges_variant is PackedFloat64Array:
-        var w_edges: PackedFloat64Array = w_edges_variant
-        for i in range(w_edges.size()):
-            footprint_edges.append(w_edges[i])
+        w_bins_count = (w_edges_variant as PackedFloat64Array).size() + 1
     var d_edges_variant := schema.get("footprint_d_edges", PackedFloat64Array())
     if d_edges_variant is PackedFloat64Array:
-        var d_edges: PackedFloat64Array = d_edges_variant
-        for i in range(d_edges.size()):
-            footprint_edges.append(d_edges[i])
-    bin_edges_dict["footprint"] = footprint_edges
-    bin_edges_dict["area"] = schema.get("room_area_edges", PackedFloat64Array())
-    bin_edges_dict["aspect"] = schema.get("aspect_edges", PackedFloat64Array())
-    schema["bin_edges"] = bin_edges_dict
+        d_bins_count = (d_edges_variant as PackedFloat64Array).size() + 1
+    schema["footprint_w_bin_count"] = w_bins_count
+    schema["footprint_d_bin_count"] = d_bins_count
+    schema["footprint_bin_count"] = w_bins_count * d_bins_count
 
     var area_edges: PackedFloat64Array = schema["room_area_edges"]
     var aspect_edges: PackedFloat64Array = schema["aspect_edges"]

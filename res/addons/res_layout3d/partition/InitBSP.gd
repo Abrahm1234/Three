@@ -66,22 +66,23 @@ static func build_adjacency_aware(prog: ArchitecturalProgram, step := 0.1) -> Pa
 			var fallback_rect := _find_empty_space(part.footprint, placed.values(), room_dict, prog)
 			placed[rid] = fallback_rect
 
-	for room_dict in prog.rooms:
-		var rid := String(room_dict.get("id", ""))
-		if rid == "":
-			continue
-		var rect: Rect2 = placed.get(rid, Rect2())
-		if rect == Rect2():
-			rect = _find_empty_space(part.footprint, placed.values(), room_dict, prog)
-		rect.size.x = max(rect.size.x, Partition.MIN_ROOM.x)
-		rect.size.y = max(rect.size.y, Partition.MIN_ROOM.y)
-		rect = part.grid.snap_rect(rect)
-		var room_type := String(room_dict.get("type", ""))
-		var floor_num := int(room_dict.get("floor", 0))
-		part.add_room_rect(room_type, rect, floor_num)
+        for room_dict in prog.rooms:
+                var rid := String(room_dict.get("id", ""))
+                if rid == "":
+                        continue
+                var rect: Rect2 = placed.get(rid, Rect2())
+                if rect == Rect2():
+                        rect = _find_empty_space(part.footprint, placed.values(), room_dict, prog)
+                rect.size.x = max(rect.size.x, Partition.MIN_ROOM.x)
+                rect.size.y = max(rect.size.y, Partition.MIN_ROOM.y)
+                rect = part.grid.snap_rect(rect)
+                var room_type := String(room_dict.get("type", ""))
+                var floor_num := int(room_dict.get("floor", 0))
+                part.add_room_rect(room_type, rect, floor_num)
 
-	print("✓ Adjacency-aware initialization: placed %d/%d rooms" % [placed.size(), prog.rooms.size()])
-	return part
+        part.enforce_required_adjacencies(prog)
+        print("✓ Adjacency-aware initialization: placed %d/%d rooms" % [placed.size(), prog.rooms.size()])
+        return part
 
 # Build adjacency graph from program edges
 static func _build_adjacency_graph(prog: ArchitecturalProgram) -> Dictionary:
