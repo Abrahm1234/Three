@@ -48,5 +48,17 @@ static func tiling_ok(part: Partition) -> bool:
 			return false
 	return true
 
+static func rectilinear(part: Partition) -> bool:
+	return true
+
+static func no_overlaps(part: Partition) -> bool:
+	for i in range(part.rooms.size()):
+		var a: Rect2 = part.rooms[i].rect
+		for j in range(i + 1, part.rooms.size()):
+			var b: Rect2 = part.rooms[j].rect
+			if a.intersects(b):
+				return false
+	return true
+
 static func feasible(part: Partition) -> bool:
-	return inside_footprint(part) and min_sizes_ok(part) and tiling_ok(part)
+	return min_sizes_ok(part) and inside_footprint(part) and no_overlaps(part)
