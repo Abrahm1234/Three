@@ -1,6 +1,8 @@
 extends Node
 class_name ProgramBN
 
+const DEBUG_VERIFY := true
+
 const RandomCtx := preload("res://addons/res_layout3d/core/RandomCtx.gd")
 const TrainingData := preload("res://addons/res_layout3d/data/TrainingData.gd")
 
@@ -38,6 +40,8 @@ class BNNode:
 var nodes: Dictionary = {}  # name -> BNNode
 var training_data: TrainingData
 var rng_ctx: RandomCtx
+var schema_edges: Dictionary = {}
+var adj_node_pairs: Dictionary = {}
 
 # Legacy fallback support
 var P_beds := {
@@ -49,6 +53,11 @@ var P_baths_given_beds := {2: 1, 3: 2, 4: 3, 5: 3}
 
 func configure_rng(ctx: RandomCtx) -> void:
 	rng_ctx = ctx
+
+func configure_from_schema(s: Dictionary) -> void:
+	schema_edges = s.duplicate(true)
+	if DEBUG_VERIFY:
+		print("[BN] configure_from_schema: schema_keys=%d" % s.keys().size())
 
 func _rng() -> RandomNumberGenerator:
 	return rng_ctx.rng if rng_ctx != null else RandomNumberGenerator.new()
@@ -64,120 +73,245 @@ func _bucket_sq_m2(m2: float) -> String:
 	return "large"
 
 ## Train from data using simplified structure learning
-func train(data: TrainingData, floors: int = 1) -> void:
+func train(data: TrainingData, floors: int = 1, schema_in: Dictionary = {}) -> void:
 	training_data = data
 	var instances: Array
-	
+
 	match floors:
 		1: instances = data.single_story
 		2: instances = data.two_story
 		3: instances = data.three_story
 		_: instances = data.single_story
-	
+
 	if instances.is_empty():
 		push_warning("No training data for %d floors" % floors)
 		_build_default_structure()
 		return
-	
+
+	if schema_in.is_empty():
+		var binning := TrainingData.bin_corpus(instances)
+		schema_edges = binning.get("schema", {})
+	else:
+		schema_edges = schema_in.duplicate(true)
+		TrainingData.apply_binning(instances, schema_edges)
+
 	_build_structure_from_data(instances)
 	_learn_parameters(instances)
+
+func train_binned(instances: Array, schema_in: Dictionary) -> void:
+	schema_edges = schema_in.duplicate(true)
+	_build_structure_from_data(instances)
+	_learn_parameters(instances)
+	if DEBUG_VERIFY:
+		var row_count := 0
+		for node_name in nodes.keys():
+				row_count += nodes[node_name].cpt.size()
+		print("[BN] trained: instances=%d cpt_rows=%d nodes=%d" % [instances.size(), row_count, nodes.size()])
 
 ## Build network structure (simplified)
 func _build_structure_from_data(instances: Array) -> void:
 	nodes.clear()
+	adj_node_pairs.clear()
 
-	# Root: Total Square Footage
+	var total_domain := _bin_domain(schema_edges.get("total_m2_edges", PackedFloat64Array()))
+	if total_domain.is_empty():
+		total_domain = [0, 1, 2]
 	var sqft_node := BNNode.new()
-	sqft_node.name = "total_sqft"
-	sqft_node.domain = ["small", "medium", "large"]  # Discretized
-	nodes["total_sqft"] = sqft_node
+	sqft_node.name = "total_m2_bin"
+	sqft_node.domain = total_domain
+	nodes[sqft_node.name] = sqft_node
 
-	# Bedrooms depends on sqft
+	var footprint_domain := _footprint_domain(
+		schema_edges.get("footprint_w_edges", PackedFloat64Array()),
+		schema_edges.get("footprint_d_edges", PackedFloat64Array())
+	)
+	if footprint_domain.is_empty():
+		footprint_domain = [0]
+	var footprint_node := BNNode.new()
+	footprint_node.name = "footprint_bin"
+	footprint_node.domain = footprint_domain
+	footprint_node.parents = [sqft_node.name]
+	nodes[footprint_node.name] = footprint_node
+
+	var bedroom_domain := _collect_unique_counts(instances, "Bedroom")
+	if bedroom_domain.is_empty():
+		bedroom_domain = [0, 1, 2, 3, 4, 5]
 	var bed_node := BNNode.new()
 	bed_node.name = "bedrooms"
-	bed_node.domain = [2, 3, 4, 5]
-	bed_node.parents = ["total_sqft"]
-	nodes["bedrooms"] = bed_node
+	bed_node.domain = bedroom_domain
+	bed_node.parents = [sqft_node.name]
+	nodes[bed_node.name] = bed_node
 
-	# Bathrooms depends on bedrooms
+	var bathroom_domain := _collect_unique_counts(instances, "Bathroom")
+	if bathroom_domain.is_empty():
+		bathroom_domain = [0, 1, 2, 3]
 	var bath_node := BNNode.new()
 	bath_node.name = "bathrooms"
-	bath_node.domain = [1, 2, 3, 4]
+	bath_node.domain = bathroom_domain
 	bath_node.parents = ["bedrooms"]
-	nodes["bathrooms"] = bath_node
+	nodes[bath_node.name] = bath_node
 
-	# Room existence nodes - dynamically discover all room types from training data
-	var discovered_room_types := _extract_unique_room_types(instances)
-	print("✓ Discovered %d room types: %s" % [discovered_room_types.size(), discovered_room_types])
-
-	for room_type in discovered_room_types:
+	var room_types_variant := schema_edges.get("room_types", [])
+	var room_types: Array
+	if room_types_variant is Array:
+		room_types = room_types_variant.duplicate()
+	else:
+		room_types = []
+	if room_types.is_empty():
+		room_types = _extract_unique_room_types(instances)
+	var count_max_dict_variant := schema_edges.get("count_max_by_type", {})
+	var count_max_dict: Dictionary = count_max_dict_variant if count_max_dict_variant is Dictionary else {}
+	for room_type in room_types:
 		var exists_node := BNNode.new()
 		exists_node.name = "%s_exists" % room_type
-		exists_node.domain = [true, false]
-		exists_node.parents = ["bedrooms", "total_sqft"]  # Both influence existence
+		exists_node.domain = [0, 1]
+		exists_node.parents = [sqft_node.name]
 		nodes[exists_node.name] = exists_node
 
-	# Adjacency nodes (example: Living-Kitchen)
-	var adj_lk := BNNode.new()
-	adj_lk.name = "adj_Living_Kitchen"
-	adj_lk.domain = ["none", "door", "open"]
-	adj_lk.parents = ["Living_exists", "Kitchen_exists"]
-	nodes[adj_lk.name] = adj_lk
+		var max_count := int(count_max_dict.get(room_type, 4))
+		var count_domain: Array = []
+		for i in range(max_count + 1):
+				count_domain.append(i)
+		if count_domain.is_empty():
+				count_domain = [0]
+		var count_node := BNNode.new()
+		count_node.name = "%s_count" % room_type
+		count_node.domain = count_domain
+		count_node.parents = [exists_node.name]
+		nodes[count_node.name] = count_node
 
-## Learn CPT parameters from data
+		var area_map_variant := schema_edges.get("area_labels", {})
+		var area_map: Dictionary = area_map_variant if area_map_variant is Dictionary else {}
+		var area_labels_variant := area_map.get(room_type)
+		var area_domain: Array = []
+		if area_labels_variant is Array:
+				area_domain = (area_labels_variant as Array).duplicate()
+		else:
+				area_domain = _bin_domain(schema_edges.get("room_area_edges", PackedFloat64Array()))
+		var area_node := BNNode.new()
+		area_node.name = "%s_area_bin" % room_type
+		area_node.domain = area_domain
+		area_node.parents = [exists_node.name]
+		nodes[area_node.name] = area_node
+
+		var aspect_map_variant := schema_edges.get("aspect_labels", {})
+		var aspect_map: Dictionary = aspect_map_variant if aspect_map_variant is Dictionary else {}
+		var aspect_labels_variant := aspect_map.get(room_type)
+		var aspect_domain: Array = []
+		if aspect_labels_variant is Array:
+				aspect_domain = (aspect_labels_variant as Array).duplicate()
+		else:
+				aspect_domain = _bin_domain(schema_edges.get("aspect_edges", PackedFloat64Array()))
+		var aspect_node := BNNode.new()
+		aspect_node.name = "%s_aspect_bin" % room_type
+		aspect_node.domain = aspect_domain
+		aspect_node.parents = [exists_node.name]
+		nodes[aspect_node.name] = aspect_node
+
+	var pair_labels_variant := schema_edges.get("adj_pairs", [])
+	var pair_labels: Array
+	if pair_labels_variant is Array:
+		pair_labels = pair_labels_variant.duplicate()
+	else:
+		pair_labels = []
+	if pair_labels.is_empty():
+		pair_labels = _collect_unique_adj_pair_labels(instances)
+        var type_labels_variant := schema_edges.get("adj_type_labels", [])
+        var type_labels: Array = []
+        if type_labels_variant is Array:
+                type_labels = (type_labels_variant as Array).duplicate()
+        var has_type_nodes := not type_labels.is_empty()
+        for label in pair_labels:
+                var exist_node := BNNode.new()
+                exist_node.name = "adj_%s_exist" % label
+                exist_node.domain = [0, 1]
+                var parts: PackedStringArray = label.split("|", false)
+                if parts.size() == 2:
+                                exist_node.parents = ["%s_exists" % parts[0], "%s_exists" % parts[1]]
+                nodes[exist_node.name] = exist_node
+
+                if has_type_nodes:
+                        var type_node := BNNode.new()
+                        type_node.name = "adj_%s_type" % label
+                        type_node.domain = type_labels.duplicate()
+                        type_node.parents = [exist_node.name, sqft_node.name]
+                        nodes[type_node.name] = type_node
+                        adj_node_pairs[type_node.name] = label
+	if DEBUG_VERIFY:
+		var edge_count := 0
+		for node_name in nodes.keys():
+			var node_ref: BNNode = nodes[node_name]
+			edge_count += node_ref.parents.size()
+		print("[BN] prepared: nodes=%d edges=%d schema_loaded=%s" % [nodes.size(), edge_count, str(not schema_edges.is_empty())])
 func _learn_parameters(instances: Array) -> void:
 	for node_name in nodes.keys():
 		var node: BNNode = nodes[node_name]
-		var counts := {}  # key -> {value -> count}
-		
-		for inst in instances:
-			if not (inst is TrainingData.ProgramInstance):
-				continue
-			var prog: TrainingData.ProgramInstance = inst
-			
-			# Extract parent values
-			var parent_vals := {}
-			for parent in node.parents:
-				parent_vals[parent] = _extract_feature(prog, parent)
-			
-			var key := node._cpt_key(parent_vals)
-			if not counts.has(key):
-				counts[key] = {}
-			
-			var value = _extract_feature(prog, node_name)
-			if not counts[key].has(value):
-				counts[key][value] = 0
-			counts[key][value] += 1
-		
-		# Convert counts to probabilities
-		for key in counts.keys():
-			var total := 0
-			for v in counts[key].keys():
-				total += counts[key][v]
-			
-			var probs: Array = []
-			for domain_val in node.domain:
-				var count: int = counts[key].get(domain_val, 0)
-				probs.append(float(count) / max(1, total))
-			
-			node.cpt[key] = probs
+		var counts := {}
 
-func _extract_feature(prog: TrainingData.ProgramInstance, feature: String) -> Variant:
-	match feature:
-		"total_sqft":
-			if prog.total_sqft < 120: return "small"
-			elif prog.total_sqft < 200: return "medium"
-			else: return "large"
-		"bedrooms": return prog.bedrooms
-		"bathrooms": return prog.bathrooms
-		_:
-			if feature.ends_with("_exists"):
-				var room_type := feature.replace("_exists", "")
-				for r in prog.rooms:
-					if r.get("type") == room_type:
-						return true
-				return false
-	return null
+		for inst in instances:
+				var dict_inst := _instance_to_dict(inst)
+				if dict_inst.is_empty():
+						continue
+
+				var parent_vals := {}
+				var missing_parent := false
+				for parent in node.parents:
+						if not dict_inst.has(parent):
+								missing_parent = true
+								break
+						parent_vals[parent] = dict_inst[parent]
+				if missing_parent:
+						continue
+
+				if not dict_inst.has(node_name):
+						continue
+				var key := node._cpt_key(parent_vals)
+				if not counts.has(key):
+						counts[key] = {}
+				var value = dict_inst[node_name]
+				counts[key][value] = int(counts[key].get(value, 0)) + 1
+
+		if counts.is_empty():
+				var uniform: Array = []
+				if node.domain.is_empty():
+						uniform = []
+				else:
+						var weight := 1.0 / node.domain.size()
+						for _v in node.domain:
+								uniform.append(weight)
+				node.cpt["root"] = uniform
+				continue
+
+		for key in counts.keys():
+				var probs: Array = []
+				var total := 0.0
+				for domain_val in node.domain:
+						total += float(counts[key].get(domain_val, 0)) + 1.0
+				for domain_val in node.domain:
+						var count_val := float(counts[key].get(domain_val, 0)) + 1.0
+						probs.append(count_val / total)
+				node.cpt[key] = probs
+	if DEBUG_VERIFY:
+		var row_count := 0
+		for node_name in nodes.keys():
+			var node_ref: BNNode = nodes[node_name]
+			row_count += node_ref.cpt.size()
+		print("[BN] trained: instances=%d cpt_rows=%d nodes=%d" % [instances.size(), row_count, nodes.size()])
+func debug_dump_node(name: String) -> void:
+	if not DEBUG_VERIFY:
+		return
+	if not nodes.has(name):
+		print("[BN] dump: missing node: %s" % name)
+		return
+	var node: BNNode = nodes[name]
+	var keys := node.cpt.keys()
+	var first_key: Variant = null
+	if not keys.is_empty():
+		first_key = keys[0]
+	var sample := []
+	if first_key != null and node.cpt.has(first_key):
+		sample = node.cpt[first_key]
+	print("[BN] node=%s rows=%d sample_row=%s" % [name, node.cpt.size(), str(sample)])
 
 func _build_default_structure() -> void:
 	# Fallback if no training data
@@ -210,24 +344,24 @@ func _sample_from_bn(req: Dictionary) -> ArchitecturalProgram:
 		sampled["bathrooms"] = int(req["bathrooms"])
 	if req.has("sq_m2"):
 		var sqft := float(req["sq_m2"])
-		if sqft < 120: sampled["total_sqft"] = "small"
-		elif sqft < 200: sampled["total_sqft"] = "medium"
-		else: sampled["total_sqft"] = "large"
-	
+		var area_edges: PackedFloat64Array = schema_edges.get("total_m2_edges", PackedFloat64Array())
+		sampled["total_m2_bin"] = _bin_index_for_value(sqft, area_edges)
+
 	# Sample ALL nodes in topological order
 	for node_name in order:
 		if sampled.has(node_name):
 			continue
-		
+
 		if not nodes.has(node_name):
 			continue
-		
+
 		var node: BNNode = nodes[node_name]
 		var parent_vals := {}
 		for p in node.parents:
 			parent_vals[p] = sampled.get(p)
-		
+
 		sampled[node_name] = node.sample_given(parent_vals, rng)
+
 	
 	# Convert sampled values to architectural program
 	return _sampled_to_program(sampled, req)
@@ -278,7 +412,12 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 	var beds := int(sampled.get("bedrooms", 3))
 	var baths := int(sampled.get("bathrooms", 2))
 	var floors := int(req.get("floors", 1))  # ✅ MUST be defined HERE at the top
-	var sqft := float(req.get("sq_m2", 160.0))
+	var area_edges: PackedFloat64Array = schema_edges.get("total_m2_edges", PackedFloat64Array())
+	var requested_sqft := float(req.get("sq_m2", -1.0))
+	var sqft_bin := int(sampled.get("total_m2_bin", _bin_index_for_value(requested_sqft, area_edges) if requested_sqft >= 0.0 else 0))
+	var sqft := requested_sqft if requested_sqft >= 0.0 else _bin_midpoint(sqft_bin, area_edges)
+	if sqft <= 0.0:
+		sqft = 160.0
 
 	var rooms: Array[Dictionary] = []
 
@@ -361,10 +500,14 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 	program.rooms = rooms
 
 	# Edge generation with Hall support
-	var edges: Array[Dictionary] = []
-	var adj_type := sampled.get("adj_Living_Kitchen", "open")
-	if adj_type != "none":
-		edges.append({"a_id": "living", "b_id": "kitchen", "type": String(adj_type)})
+        var edges: Array[Dictionary] = []
+        var kitchen_living_exist := 0
+        if sampled.has("adj_Kitchen|Living_exist"):
+                kitchen_living_exist = int(sampled.get("adj_Kitchen|Living_exist", 0))
+        elif sampled.has("adj_Living|Kitchen_exist"):
+                kitchen_living_exist = int(sampled.get("adj_Living|Kitchen_exist", 0))
+        if kitchen_living_exist > 0:
+                edges.append({"a_id": "living", "b_id": "kitchen", "type": "open"})
 
 	edges.append({"a_id": "entry", "b_id": "living", "type": "door"})
 	
@@ -542,6 +685,92 @@ func p_adj(a: String, b: String) -> float:
 	}
 	return float(priors.get(k, 0.2))
 
+static func _bin_domain(edges: PackedFloat64Array) -> Array:
+	var count := edges.size() + 1
+	var domain: Array = []
+	for i in range(count):
+		domain.append(i)
+	return domain
+
+static func _footprint_domain(w_edges: PackedFloat64Array, d_edges: PackedFloat64Array) -> Array:
+	var w_bins := w_edges.size() + 1
+	var d_bins := d_edges.size() + 1
+	var domain: Array = []
+	for w in range(w_bins):
+		for d in range(d_bins):
+			domain.append(w * d_bins + d)
+	return domain
+
+static func _count_bin_domain() -> Array:
+	return [0, 1, 2, 3]
+
+static func _collect_unique_counts(instances: Array, room_type: String) -> Array:
+	var values := {}
+	for inst in instances:
+		var dict_inst := _instance_to_dict(inst)
+		if dict_inst.is_empty():
+				continue
+		var counts_variant := dict_inst.get("room_counts", {})
+		var count := 0
+		if counts_variant is Dictionary and (counts_variant as Dictionary).has(room_type):
+				count = int((counts_variant as Dictionary)[room_type])
+		else:
+				count = int(dict_inst.get("%s_count" % room_type, 0))
+		values[count] = true
+	var result: Array = []
+	for k in values.keys():
+		result.append(int(k))
+	result.sort()
+	return result
+
+static func _collect_unique_adj_pair_labels(instances: Array) -> Array[String]:
+	var labels := {}
+	for inst in instances:
+		var dict_inst := _instance_to_dict(inst)
+		if dict_inst.is_empty():
+				continue
+		var summary_variant := dict_inst.get("adj_summary", {})
+		if summary_variant is Dictionary:
+				for label in (summary_variant as Dictionary).keys():
+						if String(label) != "":
+								labels[String(label)] = true
+				continue
+		for pair in dict_inst.get("adj_pairs", []):
+				if not (pair is Dictionary):
+						continue
+				var label := String(pair.get("pair", ""))
+				if label == "":
+						continue
+				labels[label] = true
+	var out: Array[String] = []
+	for label in labels.keys():
+		out.append(label)
+	out.sort()
+	return out
+
+static func _instance_to_dict(inst) -> Dictionary:
+	if inst is TrainingData.ProgramInstance:
+		return TrainingData._program_to_dict(inst)
+	if typeof(inst) == TYPE_DICTIONARY:
+		return inst
+	return {}
+
+static func _bin_index_for_value(value: float, edges: PackedFloat64Array) -> int:
+	for i in range(edges.size()):
+		if value < edges[i]:
+			return i
+	return edges.size()
+
+static func _bin_midpoint(bin_idx: int, edges: PackedFloat64Array) -> float:
+	if edges.is_empty():
+		return 0.0
+	var lower := 0.0
+	if bin_idx > 0:
+		lower = edges[min(bin_idx - 1, edges.size() - 1)]
+	var upper := edges[min(bin_idx, edges.size() - 1)] if bin_idx < edges.size() else edges[-1] + 40.0
+	if upper <= lower:
+		upper = lower + 1.0
+	return (lower + upper) * 0.5
 ## Extract all unique room types from training data
 func _extract_unique_room_types(instances: Array) -> Array[String]:
 	var room_types := {}
