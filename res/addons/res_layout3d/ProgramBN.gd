@@ -437,10 +437,9 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 	var program := ArchitecturalProgram.new()
 	program.footprint_m = req.get("footprint", Vector2i(16, 12))
 
-	# 🔥 FIX: Define ALL variables at the START of the function
 	var beds := int(sampled.get("count_Bedroom", sampled.get("bedrooms", 3)))
 	var baths := int(sampled.get("count_Bathroom", sampled.get("bathrooms", 2)))
-	var floors := int(req.get("floors", 1))  # ✅ MUST be defined HERE at the top
+	var floors := int(req.get("floors", 1))
 	var area_edges: PackedFloat64Array = schema_edges.get("total_m2_edges", PackedFloat64Array())
 	var requested_sqft := float(req.get("sq_m2", -1.0))
 	var sqft_bin := int(sampled.get("total_m2_bin", _bin_index_for_value(requested_sqft, area_edges) if requested_sqft >= 0.0 else 0))
@@ -449,8 +448,6 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 		sqft = 160.0
 
 	var rooms: Array[Dictionary] = []
-
-	# Room type templates with area/aspect PDFs
 	var room_templates := {
 		"Entry": {"area_mean": 6.0, "area_sigma": 1.5, "aspect_mean": 1.2, "aspect_sigma": 0.2, "window": true},
 		"Living": {"area_mean": 28.0, "area_sigma": 6.0, "aspect_mean": 1.5, "aspect_sigma": 0.4, "window": true},
@@ -470,91 +467,130 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 		"Utility": {"area_mean": 3.5, "area_sigma": 0.8, "aspect_mean": 1.0, "aspect_sigma": 0.1, "window": false}
 	}
 
-	# FIX: Force Hall generation for multi-bedroom or multi-floor layouts
-	var force_hall := beds >= 3 or floors > 1  # floors is defined above
+	var force_hall := beds >= 3 or floors > 1
 	var hall_exists := _exists_flag(sampled, "Hall")
 	if force_hall and not hall_exists:
-		print("[BN] Forcing Hall generation (beds=%d, floors=%d)" % [beds, floors])
 		sampled["Hall_exists"] = 1
 		hall_exists = true
 
-	# Generate rooms based on BN decisions
 	for node_name in nodes.keys():
-		if node_name.ends_with("_exists"):
-			var room_type: String = node_name.trim_suffix("_exists")
-			if int(sampled.get(node_name, 0)) == 0:
-				continue
-
-			var tmpl := room_templates.get(room_type, {"area_mean": 8.0, "area_sigma": 2.0, "aspect_mean": 1.2, "aspect_sigma": 0.2, "window": true})
-
-				if room_type == "Bedroom":
-					for i in range(beds):
-						var floor_num := 0
-						if floors > 1 and i > 0:  # floors available
-							floor_num = 1
-						rooms.append({
-							"id": "bed_%d" % (i + 1), "type": "Bedroom", "floor": floor_num, "needs_window": tmpl["window"],
-							"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
-							"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
-						})
-				elif room_type == "Bathroom":
-					for i in range(baths):
-						var floor_num := 0
-						if floors > 1 and i > 0:  # floors available
-							floor_num = 1
-						rooms.append({
-							"id": "bath_%d" % (i + 1), "type": "Bathroom", "floor": floor_num, "needs_window": tmpl["window"],
-							"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
-							"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
-						})
-				elif room_type == "Hall":
-				# Ensure floors is in scope when generating halls
-					var hall_floor := 0 if floors == 1 else 1  # Upper floor for multi-story
+		if not node_name.ends_with("_exists"):
+			continue
+		var room_type := node_name.trim_suffix("_exists")
+		if int(sampled.get(node_name, 0)) == 0:
+			continue
+		var tmpl: Dictionary = room_templates.get(room_type, {
+			"area_mean": 8.0,
+			"area_sigma": 2.0,
+			"aspect_mean": 1.2,
+			"aspect_sigma": 0.2,
+			"window": true
+		})
+		if room_type == "Bedroom":
+			for i in range(beds):
+				var floor_num := 0
+				if floors > 1 and i > 0:
+					floor_num = 1
+				rooms.append({
+					"id": "bed_%d" % (i + 1),
+					"type": "Bedroom",
+					"floor": floor_num,
+					"needs_window": tmpl["window"],
+					"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
+					"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
+				})
+		elif room_type == "Bathroom":
+			for i in range(baths):
+				var floor_num := 0
+				if floors > 1 and i > 0:
+					floor_num = 1
+				rooms.append({
+					"id": "bath_%d" % (i + 1),
+					"type": "Bathroom",
+					"floor": floor_num,
+					"needs_window": tmpl["window"],
+					"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
+					"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
+				})
+		elif room_type == "Hall":
+			var hall_floor := 0 if floors == 1 else 1
+			rooms.append({
+				"id": "hall",
+				"type": "Hall",
+				"floor": hall_floor,
+				"needs_window": false,
+				"area_pdf": {"mean": 8.0, "sigma": 2.0},
+				"aspect_pdf": {"mean": 2.5, "sigma": 0.5}
+			})
+		elif room_type == "Stair":
+			if floors > 1:
+				for f in range(floors):
 					rooms.append({
-						"id": "hall", "type": "Hall", "floor": hall_floor, "needs_window": false,
-						"area_pdf": {"mean": 8.0, "sigma": 2.0},
+						"id": "stair_%d" % f,
+						"type": "Stair",
+						"floor": f,
+						"needs_window": false,
+						"area_pdf": {"mean": 4.0, "sigma": 1.0},
 						"aspect_pdf": {"mean": 2.5, "sigma": 0.5}
 					})
-				elif room_type == "Stair":
-					if floors > 1:  # floors available
-						for f in range(floors):
-							rooms.append({
-								"id": "stair_%d" % f, "type": "Stair", "floor": f, "needs_window": false,
-								"area_pdf": {"mean": 4.0, "sigma": 1.0},
-								"aspect_pdf": {"mean": 2.5, "sigma": 0.5}
-							})
-				else:
-					rooms.append({
-						"id": room_type.to_lower(), "type": room_type, "floor": 0, "needs_window": tmpl["window"],
-						"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
-						"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
-					})
+		elif room_type == "Entry":
+			rooms.append({
+				"id": "entry",
+				"type": "Entry",
+				"floor": 0,
+				"needs_window": true,
+				"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
+				"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
+			})
+		elif room_type == "Living":
+			rooms.append({
+				"id": "living",
+				"type": "Living",
+				"floor": 0,
+				"needs_window": true,
+				"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
+				"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
+			})
+		elif room_type == "Kitchen":
+			rooms.append({
+				"id": "kitchen",
+				"type": "Kitchen",
+				"floor": 0,
+				"needs_window": true,
+				"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
+				"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
+			})
+		else:
+			rooms.append({
+				"id": room_type.to_lower(),
+				"type": room_type,
+				"floor": 0,
+				"needs_window": tmpl["window"],
+				"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
+				"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
+			})
 
 	program.rooms = rooms
-	
-	var edges := _build_program_edges(sampled, rooms, beds, baths, floors)
-	program.edges = edges
+	program.edges = _build_program_edges(sampled, rooms, beds, baths, floors)
 
-	print("✓ Generated program: %d rooms, %d edges, %d floors" % [rooms.size(), edges.size(), floors])
+	if DEBUG_VERIFY:
+		print("[BN] program sample: rooms=%d edges=%d floors=%d" % [rooms.size(), program.edges.size(), floors])
 	return program
-
 
 func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: int, floors: int) -> Array[Dictionary]:
 	var edges: Array[Dictionary] = []
-	var kitchen_living_exist := _adj_exist_value(sampled, "Kitchen|Living")
-	if kitchen_living_exist > 0:
+
+	if _adj_exist_value(sampled, "Kitchen|Living") > 0:
 		edges.append({"a_id": "living", "b_id": "kitchen", "type": "open"})
 
 	edges.append({"a_id": "entry", "b_id": "living", "type": "door"})
 
 	var has_hall := rooms.any(func(r): return r.get("type", "") == "Hall")
-
 	if has_hall:
 		for i in range(beds):
-			if i == 0 and beds > 1:
-				edges.append({"a_id": "living", "b_id": "bed_%d" % (i + 1), "type": "door"})
-			else:
-				edges.append({"a_id": "hall", "b_id": "bed_%d" % (i + 1), "type": "door"})
+			var bed_id := "bed_%d" % (i + 1)
+			var anchor := "living" if i == 0 and beds > 1 else "hall"
+			edges.append({"a_id": anchor, "b_id": bed_id, "type": "door"})
 
 		if floors > 1:
 			edges.append({"a_id": "hall", "b_id": "stair_1", "type": "door"})
