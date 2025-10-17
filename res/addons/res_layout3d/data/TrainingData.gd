@@ -169,9 +169,10 @@ static func load_resplan_as_programs(dir_path: String) -> Array:
         if typeof(parsed) != TYPE_DICTIONARY:
             continue
         var meta: Dictionary = parsed
-        var json_rel := String(meta.get("json", ""))
+        var json_rel := String(meta.get("json", meta.get("file", "")))
         if json_rel.is_empty():
             continue
+        json_rel = json_rel.replace("\\", "/")
         var plan_path := dir_path.path_join(json_rel)
         if not FileAccess.file_exists(plan_path):
             continue
@@ -455,7 +456,7 @@ static func bin_corpus(instances: Array, cfg: Dictionary = default_binning_confi
         exported.append(_program_to_dict(prog))
 
     var schema := _build_schema(exported, edges)
-    var adj_pairs_variant := schema.get("adj_pairs", [])
+    var adj_pairs_variant := schema.get("adj_pair_labels", schema.get("adj_pairs", []))
     var adj_pairs: Array = []
     if adj_pairs_variant is Array:
         adj_pairs = adj_pairs_variant.duplicate()
@@ -464,9 +465,24 @@ static func bin_corpus(instances: Array, cfg: Dictionary = default_binning_confi
             continue
         var dict_inst: Dictionary = inst
         for label in adj_pairs:
-            var exist_key := "adj_%s_exist" % label
+            var exist_key := "adj_exist:%s" % label
             if not dict_inst.has(exist_key):
                 dict_inst[exist_key] = 0
+
+    var room_type_labels_variant := schema.get("room_type_labels", schema.get("room_types", []))
+    if room_type_labels_variant is Array:
+        var room_type_labels: Array = (room_type_labels_variant as Array)
+        for inst in exported:
+            if typeof(inst) != TYPE_DICTIONARY:
+                continue
+            var dict_inst: Dictionary = inst
+            for room_type in room_type_labels:
+                var count_key := "count_%s" % room_type
+                if not dict_inst.has(count_key):
+                    dict_inst[count_key] = 0
+                var exists_key := "%s_exists" % room_type
+                if not dict_inst.has(exists_key):
+                    dict_inst[exists_key] = 0
 
     var result := {
         "schema": schema,
@@ -481,7 +497,7 @@ static func _dbg_bins(schema: Dictionary, insts: Array) -> void:
         print("[BIN] empty corpus")
         return
     var room_types_count := 0
-    var room_types_var := schema.get("room_types")
+    var room_types_var := schema.get("room_type_labels", schema.get("room_types"))
     if room_types_var is Array:
         room_types_count = (room_types_var as Array).size()
     var edges_dict_variant := schema.get("bin_edges", {})
@@ -731,7 +747,8 @@ static func _bin_program(prog, edges: Dictionary) -> void:
     var summary_out := {}
     for label in pair_summary.keys():
         summary_out[label] = {"exist": bool(pair_summary[label])}
-        _set_field(prog, "adj_%s_exist" % label, 1 if pair_summary[label] else 0)
+        var exist_key := "adj_exist:%s" % label
+        _set_field(prog, exist_key, 1 if pair_summary[label] else 0)
     _set_field(prog, "adj_summary", summary_out)
 
     var counts: Dictionary = {}
@@ -741,7 +758,7 @@ static func _bin_program(prog, edges: Dictionary) -> void:
         var count := int(label_counts[room_type])
         counts[room_type] = count
         var exists_key := "%s_exists" % room_type
-        var count_key := "%s_count" % room_type
+        var count_key := "count_%s" % room_type
         var exist_flag := count > 0
         exists[exists_key] = 1 if exist_flag else 0
         count_bins["%s_count_bin" % room_type] = _count_to_bin(count)
@@ -808,7 +825,7 @@ static func _program_to_dict(prog) -> Dictionary:
         result["room_exists"] = inst.room_exists.duplicate()
         result["room_count_bins"] = inst.room_count_bins.duplicate()
         for room_type in inst.room_counts.keys():
-            var count_key := "%s_count" % room_type
+            var count_key := "count_%s" % room_type
             result[count_key] = int(inst.room_counts[room_type])
         for exists_key in inst.room_exists.keys():
             result[exists_key] = inst.room_exists[exists_key]
@@ -830,7 +847,7 @@ static func _program_to_dict(prog) -> Dictionary:
             var summary_dict: Dictionary = inst.adj_summary
             for pair_label in summary_dict.keys():
                 var summary: Dictionary = summary_dict[pair_label]
-                result["adj_%s_exist" % pair_label] = 1 if summary.get("exist", false) else 0
+                result["adj_exist:%s" % pair_label] = 1 if summary.get("exist", false) else 0
         return result
     if typeof(prog) == TYPE_DICTIONARY:
         var dict_prog: Dictionary = prog
@@ -870,12 +887,12 @@ static func _program_to_dict(prog) -> Dictionary:
             var summary_dict: Dictionary = summary_dict_any
             for pair_label in summary_dict.keys():
                 var summary: Dictionary = summary_dict[pair_label]
-                result["adj_%s_exist" % pair_label] = 1 if summary.get("exist", false) else 0
+                result["adj_exist:%s" % pair_label] = 1 if summary.get("exist", false) else 0
         var counts_dict_any = dict_prog.get("room_counts", {})
         if counts_dict_any is Dictionary:
             var counts_dict: Dictionary = counts_dict_any
             for room_type in counts_dict.keys():
-                result["%s_count" % room_type] = int(counts_dict[room_type])
+                result["count_%s" % room_type] = int(counts_dict[room_type])
         var exists_dict_any = dict_prog.get("room_exists", {})
         if exists_dict_any is Dictionary:
             var exists_dict: Dictionary = exists_dict_any
@@ -924,7 +941,9 @@ static func _build_schema(programs: Array, edges: Dictionary) -> Dictionary:
         "room_area_edges": edges.get("room_area_edges", PackedFloat64Array()),
         "aspect_edges": edges.get("aspect_edges", PackedFloat64Array()),
         "room_types": room_type_list,
+        "room_type_labels": room_type_list,
         "adj_pairs": adj_list,
+        "adj_pair_labels": adj_list,
         "count_max_by_type": count_max,
         "adj_type_labels": [],
         "exist_labels": [0, 1],

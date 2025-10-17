@@ -175,7 +175,7 @@ func _build_structure_from_data(instances: Array) -> void:
 		if count_domain.is_empty():
 				count_domain = [0]
 		var count_node := BNNode.new()
-		count_node.name = "%s_count" % room_type
+		count_node.name = "count_%s" % room_type
 		count_node.domain = count_domain
 		count_node.parents = [exists_node.name]
 		nodes[count_node.name] = count_node
@@ -208,7 +208,7 @@ func _build_structure_from_data(instances: Array) -> void:
 		aspect_node.parents = [exists_node.name]
 		nodes[aspect_node.name] = aspect_node
 
-	var pair_labels_variant := schema_edges.get("adj_pairs", [])
+	var pair_labels_variant := schema_edges.get("adj_pair_labels", schema_edges.get("adj_pairs", []))
 	var pair_labels: Array
 	if pair_labels_variant is Array:
 		pair_labels = pair_labels_variant.duplicate()
@@ -223,18 +223,27 @@ func _build_structure_from_data(instances: Array) -> void:
 	var has_type_nodes := not type_labels.is_empty()
 	for label in pair_labels:
 		var exist_node := BNNode.new()
-		exist_node.name = "adj_%s_exist" % label
+		exist_node.name = _adj_exist_key(label)
 		exist_node.domain = [0, 1]
+		var parents: Array[String] = []
 		var parts: PackedStringArray = label.split("|", false)
-		if parts.size() == 2:
-				exist_node.parents = ["%s_exists" % parts[0], "%s_exists" % parts[1]]
+		if parts.size() >= 2:
+			var pa := "count_%s" % parts[0]
+			var pb := "count_%s" % parts[1]
+			if nodes.has(pa):
+				parents.append(pa)
+			if nodes.has(pb):
+				parents.append(pb)
+		if parents.is_empty():
+			parents.append(sqft_node.name)
+		exist_node.parents = parents
 		nodes[exist_node.name] = exist_node
 
 		if has_type_nodes:
 			var type_node := BNNode.new()
-			type_node.name = "adj_%s_type" % label
+			type_node.name = "adj_type:%s" % label
 			type_node.domain = type_labels.duplicate()
-			type_node.parents = [exist_node.name, sqft_node.name]
+			type_node.parents = [exist_node.name]
 			nodes[type_node.name] = type_node
 			adj_node_pairs[type_node.name] = label
 	if DEBUG_VERIFY:
@@ -338,10 +347,16 @@ func _sample_from_bn(req: Dictionary) -> ArchitecturalProgram:
 	var order: Array[String] = _topological_sort()
 	
 	# Fix observed variables from requirements
-	if req.has("bedrooms"):
-		sampled["bedrooms"] = int(req["bedrooms"])
-	if req.has("bathrooms"):
-		sampled["bathrooms"] = int(req["bathrooms"])
+        if req.has("bedrooms"):
+                var forced_beds := int(req["bedrooms"])
+                sampled["bedrooms"] = forced_beds
+                sampled["count_Bedroom"] = forced_beds
+                sampled["Bedroom_exists"] = 1 if forced_beds > 0 else 0
+        if req.has("bathrooms"):
+                var forced_baths := int(req["bathrooms"])
+                sampled["bathrooms"] = forced_baths
+                sampled["count_Bathroom"] = forced_baths
+                sampled["Bathroom_exists"] = 1 if forced_baths > 0 else 0
 	if req.has("sq_m2"):
 		var sqft := float(req["sq_m2"])
 		var area_edges: PackedFloat64Array = schema_edges.get("total_m2_edges", PackedFloat64Array())
@@ -409,8 +424,8 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 	program.footprint_m = req.get("footprint", Vector2i(16, 12))
 
 	# 🔥 FIX: Define ALL variables at the START of the function
-	var beds := int(sampled.get("bedrooms", 3))
-	var baths := int(sampled.get("bathrooms", 2))
+	var beds := int(sampled.get("count_Bedroom", sampled.get("bedrooms", 3)))
+	var baths := int(sampled.get("count_Bathroom", sampled.get("bathrooms", 2)))
 	var floors := int(req.get("floors", 1))  # ✅ MUST be defined HERE at the top
 	var area_edges: PackedFloat64Array = schema_edges.get("total_m2_edges", PackedFloat64Array())
 	var requested_sqft := float(req.get("sq_m2", -1.0))
@@ -443,16 +458,20 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 	
 	# 🔥 FIX: Force Hall generation for multi-bedroom/multi-floor layouts
 	var force_hall := beds >= 3 or floors > 1  # floors is defined above
-	if force_hall and not sampled.get("Hall_exists", false):
+	var hall_exists := _exists_flag(sampled, "Hall")
+	if force_hall and not hall_exists:
 		print("⚠️ Forcing Hall generation (beds=%d, floors=%d)" % [beds, floors])
-		sampled["Hall_exists"] = true
+		sampled["Hall_exists"] = 1
+		hall_exists = true
 
 	# Generate rooms based on BN decisions
 	for node_name in nodes.keys():
 		if node_name.ends_with("_exists"):
 			var room_type: String = node_name.trim_suffix("_exists")
-			if sampled.get(node_name, false):
-				var tmpl := room_templates.get(room_type, {"area_mean": 8.0, "area_sigma": 2.0, "aspect_mean": 1.2, "aspect_sigma": 0.2, "window": true})
+			if int(sampled.get(node_name, 0)) == 0:
+				continue
+
+			var tmpl := room_templates.get(room_type, {"area_mean": 8.0, "area_sigma": 2.0, "aspect_mean": 1.2, "aspect_sigma": 0.2, "window": true})
 
 				if room_type == "Bedroom":
 					for i in range(beds):
@@ -501,11 +520,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 
 	# Edge generation with Hall support
 	var edges: Array[Dictionary] = []
-	var kitchen_living_exist := 0
-	if sampled.has("adj_Kitchen|Living_exist"):
-		kitchen_living_exist = int(sampled.get("adj_Kitchen|Living_exist", 0))
-	elif sampled.has("adj_Living|Kitchen_exist"):
-		kitchen_living_exist = int(sampled.get("adj_Living|Kitchen_exist", 0))
+	var kitchen_living_exist := _adj_exist_value(sampled, "Kitchen|Living")
 	if kitchen_living_exist > 0:
 		edges.append({"a_id": "living", "b_id": "kitchen", "type": "open"})
 
@@ -535,23 +550,23 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 	if baths > 0:
 		edges.append({"a_id": "bed_1", "b_id": "bath_1", "type": "door"})
 	
-	if sampled.get("Dining_exists", false):
+	if _exists_flag(sampled, "Dining"):
 		edges.append({"a_id": "living", "b_id": "dining", "type": "open"})
 		edges.append({"a_id": "dining", "b_id": "kitchen", "type": "open"})
 	
-	if sampled.get("Pantry_exists", false):
+	if _exists_flag(sampled, "Pantry"):
 		edges.append({"a_id": "kitchen", "b_id": "pantry", "type": "door"})
 	
-	if sampled.get("Laundry_exists", false):
+	if _exists_flag(sampled, "Laundry"):
 		edges.append({"a_id": "kitchen", "b_id": "laundry", "type": "door"})
 	
-	if sampled.get("Office_exists", false) or sampled.get("Study_exists", false):
+	if _exists_flag(sampled, "Office") or _exists_flag(sampled, "Study"):
 		edges.append({"a_id": "entry", "b_id": "office", "type": "door"})
 	
-	if sampled.get("Garage_exists", false):
+	if _exists_flag(sampled, "Garage"):
 		edges.append({"a_id": "entry", "b_id": "garage", "type": "door"})
 	
-	if sampled.get("Porch_exists", false):
+	if _exists_flag(sampled, "Porch"):
 		edges.append({"a_id": "living", "b_id": "porch", "type": "door"})
 
 	program.edges = edges
@@ -664,10 +679,10 @@ func _gauss_logpdf(x: float, mu: float, sigma: float) -> float:
 
 # Adjacency prior: probability that two room types should be adjacent
 func p_adj(a: String, b: String) -> float:
-	var sorted := [a.to_lower(), b.to_lower()]
-	sorted.sort()
-	var k := "%s|%s" % [sorted[0], sorted[1]]
-	var priors := {
+        var sorted := [a.to_lower(), b.to_lower()]
+        sorted.sort()
+        var k := "%s|%s" % [sorted[0], sorted[1]]
+        var priors := {
 		"entry|living": 0.95,
 		"kitchen|living": 0.9,
 		"living|living": 0.1,
@@ -682,8 +697,22 @@ func p_adj(a: String, b: String) -> float:
 		"hall|stair": 0.95,    # 🔥 NEW
 		"kitchen|pantry": 0.8, # 🔥 NEW
 		"kitchen|laundry": 0.7,# 🔥 NEW
-	}
-	return float(priors.get(k, 0.2))
+        }
+        return float(priors.get(k, 0.2))
+
+func _adj_exist_key(label: String) -> String:
+	return "adj_exist:%s" % label
+
+func _adj_exist_value(sampled: Dictionary, label: String) -> int:
+	var key := _adj_exist_key(label)
+	if sampled.has(key):
+		return int(sampled.get(key, 0))
+	var legacy_key := "adj_%s_exist" % label
+	return int(sampled.get(legacy_key, 0))
+
+func _exists_flag(sampled: Dictionary, room_type: String) -> bool:
+	var key := "%s_exists" % room_type
+	return int(sampled.get(key, 0)) == 1
 
 static func _bin_domain(edges: PackedFloat64Array) -> Array:
 	var count := edges.size() + 1
@@ -715,7 +744,7 @@ static func _collect_unique_counts(instances: Array, room_type: String) -> Array
 		if counts_variant is Dictionary and (counts_variant as Dictionary).has(room_type):
 				count = int((counts_variant as Dictionary)[room_type])
 		else:
-				count = int(dict_inst.get("%s_count" % room_type, 0))
+				count = int(dict_inst.get("count_%s" % room_type, 0))
 		values[count] = true
 	var result: Array = []
 	for k in values.keys():
