@@ -41,6 +41,7 @@ var nodes: Dictionary = {}  # name -> BNNode
 var training_data: TrainingData
 var rng_ctx: RandomCtx
 var schema_edges: Dictionary = {}
+var schema_edge_pairs: Array = []
 var adj_node_pairs: Dictionary = {}
 
 # Legacy fallback support
@@ -56,9 +57,18 @@ func configure_rng(ctx: RandomCtx) -> void:
 
 func configure_from_schema(s: Dictionary) -> void:
 	schema_edges = s.duplicate(true)
+	_rebuild_schema_edges(schema_edges)
 	if DEBUG_VERIFY:
 		print("[BN] configure_from_schema: schema_keys=%d" % s.keys().size())
 
+
+func _rebuild_schema_edges(schema: Dictionary) -> void:
+	var edges: Array = []
+	for k in schema.keys():
+		var parts: PackedStringArray = String(k).split("|", false)
+		if parts.size() >= 2:
+			edges.append({"a": parts[0], "b": parts[1]})
+	schema_edge_pairs = edges
 func _rng() -> RandomNumberGenerator:
 	return rng_ctx.rng if rng_ctx != null else RandomNumberGenerator.new()
 
@@ -91,8 +101,10 @@ func train(data: TrainingData, floors: int = 1, schema_in: Dictionary = {}) -> v
 	if schema_in.is_empty():
 		var binning := TrainingData.bin_corpus(instances)
 		schema_edges = binning.get("schema", {})
+	_rebuild_schema_edges(schema_edges)
 	else:
 		schema_edges = schema_in.duplicate(true)
+	_rebuild_schema_edges(schema_edges)
 		TrainingData.apply_binning(instances, schema_edges)
 
 	_build_structure_from_data(instances)
@@ -100,6 +112,7 @@ func train(data: TrainingData, floors: int = 1, schema_in: Dictionary = {}) -> v
 
 func train_binned(instances: Array, schema_in: Dictionary) -> void:
 	schema_edges = schema_in.duplicate(true)
+	_rebuild_schema_edges(schema_edges)
 	_build_structure_from_data(instances)
 	_learn_parameters(instances)
 	if DEBUG_VERIFY:
@@ -517,8 +530,15 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 					})
 
 	program.rooms = rooms
+	
+	var edges := _build_program_edges(sampled, rooms, beds, baths, floors)
+	program.edges = edges
 
-	# Edge generation with Hall support
+	print("✓ Generated program: %d rooms, %d edges, %d floors" % [rooms.size(), edges.size(), floors])
+	return program
+
+
+func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: int, floors: int) -> Array[Dictionary]:
 	var edges: Array[Dictionary] = []
 	var kitchen_living_exist := _adj_exist_value(sampled, "Kitchen|Living")
 	if kitchen_living_exist > 0:
@@ -526,7 +546,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 
 	edges.append({"a_id": "entry", "b_id": "living", "type": "door"})
 
-	var has_hall := rooms.any(func(r): return r["type"] == "Hall")
+	var has_hall := rooms.any(func(r): return r.get("type", "") == "Hall")
 
 	if has_hall:
 		for i in range(beds):
@@ -535,7 +555,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 			else:
 				edges.append({"a_id": "hall", "b_id": "bed_%d" % (i + 1), "type": "door"})
 
-		if floors > 1:  # floors available
+		if floors > 1:
 			edges.append({"a_id": "hall", "b_id": "stair_1", "type": "door"})
 			edges.append({"a_id": "entry", "b_id": "stair_0", "type": "door"})
 		else:
@@ -569,11 +589,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 	if _exists_flag(sampled, "Porch"):
 		edges.append({"a_id": "living", "b_id": "porch", "type": "door"})
 
-	program.edges = edges
-
-	print("✓ Generated program: %d rooms, %d edges, %d floors" % [rooms.size(), edges.size(), floors])
-	return program
-
+	return edges
 ## Legacy sampling method (fallback)
 func _sample_legacy(req: Dictionary) -> ArchitecturalProgram:
 	var program := ArchitecturalProgram.new()
