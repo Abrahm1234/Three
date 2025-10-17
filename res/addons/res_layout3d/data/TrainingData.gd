@@ -101,7 +101,7 @@ static func _shared_edge_length(a: PackedVector2Array, b: PackedVector2Array, to
                 var tmp2 := b_proj_0
                 b_proj_0 = b_proj_1
                 b_proj_1 = tmp2
-            var overlap := min(a_proj_1, b_proj_1) - max(a_proj_0, b_proj_0)
+            var overlap: float = float(min(a_proj_1, b_proj_1) - max(a_proj_0, b_proj_0))
             if overlap > -tol:
                 total += max(0.0, overlap)
     return total
