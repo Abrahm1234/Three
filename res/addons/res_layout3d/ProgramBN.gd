@@ -101,10 +101,11 @@ func train(data: TrainingData, floors: int = 1, schema_in: Dictionary = {}) -> v
 	if schema_in.is_empty():
 		var binning := TrainingData.bin_corpus(instances)
 		schema_edges = binning.get("schema", {})
-	_rebuild_schema_edges(schema_edges)
+		_rebuild_schema_edges(schema_edges)
+		TrainingData.apply_binning(instances, schema_edges)
 	else:
 		schema_edges = schema_in.duplicate(true)
-	_rebuild_schema_edges(schema_edges)
+		_rebuild_schema_edges(schema_edges)
 		TrainingData.apply_binning(instances, schema_edges)
 
 	_build_structure_from_data(instances)
@@ -469,11 +470,11 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 		"Utility": {"area_mean": 3.5, "area_sigma": 0.8, "aspect_mean": 1.0, "aspect_sigma": 0.1, "window": false}
 	}
 
-	# 🔥 FIX: Force Hall generation for multi-bedroom/multi-floor layouts
+	# FIX: Force Hall generation for multi-bedroom or multi-floor layouts
 	var force_hall := beds >= 3 or floors > 1  # floors is defined above
 	var hall_exists := _exists_flag(sampled, "Hall")
 	if force_hall and not hall_exists:
-		print("⚠️ Forcing Hall generation (beds=%d, floors=%d)" % [beds, floors])
+		print("[BN] Forcing Hall generation (beds=%d, floors=%d)" % [beds, floors])
 		sampled["Hall_exists"] = 1
 		hall_exists = true
 
@@ -507,7 +508,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 							"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
 						})
 				elif room_type == "Hall":
-					# ✅ LINE 326 FIX: floors is now in scope
+				# Ensure floors is in scope when generating halls
 					var hall_floor := 0 if floors == 1 else 1  # Upper floor for multi-story
 					rooms.append({
 						"id": "hall", "type": "Hall", "floor": hall_floor, "needs_window": false,
