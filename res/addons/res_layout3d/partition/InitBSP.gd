@@ -18,73 +18,69 @@ static func build(prog: ArchitecturalProgram, step := 0.1) -> Partition:
 static func build_adjacency_aware(prog: ArchitecturalProgram, step := 0.1) -> Partition:
 	if prog == null or prog.rooms.is_empty():
 		return null
-	
+
 	var part := Partition.new()
 	part.grid.step_m = step
 	part.set_footprint(Rect2(Vector2.ZERO, Vector2(prog.footprint_m.x, prog.footprint_m.y)))
-	
-	# Build adjacency graph
+
 	var adj_graph := _build_adjacency_graph(prog)
-	
-	# Find starting room (Entry or most connected room)
 	var start_room := _find_start_room(prog, adj_graph)
-	if start_room == null:
+	if start_room == null or start_room.is_empty():
 		return null
-	
-	# Place rooms using breadth-first traversal of adjacency graph
-	var placed := {}  # room_id -> Rect2
-	var queue: Array = [start_room]
+	var start_id := String(start_room.get("id", ""))
+	if start_id == "":
+		return null
+
+	var placed := {}
 	var visited := {}
-	
-	# Place first room in center-left
+	var queue: Array[String] = []
+
 	var start_rect := _initial_room_rect(prog, start_room, part.footprint)
-	placed[start_room["id"]] = start_rect
-	visited[start_room["id"]] = true
-	
-	# BFS placement
+	placed[start_id] = start_rect
+	visited[start_id] = true
+	queue.push_back(start_id)
+
 	while not queue.is_empty():
-		var current_room: Dictionary = queue.pop_front()
-		var current_id: String = current_room["id"]
-		var current_rect: Rect2 = placed[current_id]
-		
-		# Get adjacent rooms
+		var current_id: String = queue.pop_front()
+		var current_rect: Rect2 = placed.get(current_id, Rect2())
+		if current_rect == Rect2():
+			continue
 		var neighbors := adj_graph.get(current_id, [])
-		
 		for neighbor_id in neighbors:
 			if visited.has(neighbor_id):
 				continue
-			
-			# Find the room definition
+			visited[neighbor_id] = true
 			var neighbor_room := _find_room_by_id(prog, neighbor_id)
-			if neighbor_room == null:
+			if neighbor_room.is_empty():
 				continue
-			
-			# Place neighbor adjacent to current room
 			var neighbor_rect := _place_adjacent(current_rect, neighbor_room, prog, placed, part)
-			if neighbor_rect != Rect2():  # ✅ FIX: Use Rect2() instead of Rect2.ZERO
+			if neighbor_rect != Rect2():
 				placed[neighbor_id] = neighbor_rect
-				visited[neighbor_id] = true
-				queue.append(neighbor_room)
-	
-	# Add all rooms to partition
-	for i in range(prog.rooms.size()):
-		var room: Dictionary = prog.rooms[i]
-		var room_id: String = room["id"]
-		var rect := placed.get(room_id, Rect2())  # ✅ FIX: Use Rect2() instead of Rect2.ZERO
-		
-		if rect == Rect2():  # ✅ FIX: Use Rect2() instead of Rect2.ZERO
-			# Room wasn't placed - add it in an empty space
-			rect = _find_empty_space(part.footprint, placed.values(), room, prog)
-		
-		# Ensure minimum size and snap to grid
+				queue.push_back(neighbor_id)
+
+	for room_data in prog.rooms:
+		var room_id := String(room_data.get("id", ""))
+		if room_id == "":
+			continue
+		if not placed.has(room_id):
+			var fallback_rect := _find_empty_space(part.footprint, placed.values(), room_data, prog)
+			placed[room_id] = fallback_rect
+
+	for room_data in prog.rooms:
+		var room_id := String(room_data.get("id", ""))
+		if room_id == "":
+			continue
+		var rect: Rect2 = placed.get(room_id, Rect2())
+		if rect == Rect2():
+			rect = _find_empty_space(part.footprint, placed.values(), room_data, prog)
 		rect.size.x = max(rect.size.x, Partition.MIN_ROOM.x)
 		rect.size.y = max(rect.size.y, Partition.MIN_ROOM.y)
 		rect = part.grid.snap_rect(rect)
-		
-		var room_type := String(room.get("type", ""))
-		var floor_num := int(room.get("floor", 0))
+		var room_type := String(room_data.get("type", ""))
+		var floor_num := int(room_data.get("floor", 0))
 		part.add_room_rect(room_type, rect, floor_num)
-	
+
+	part.enforce_required_adjacencies(prog)
 	print("✓ Adjacency-aware initialization: placed %d/%d rooms" % [placed.size(), prog.rooms.size()])
 	return part
 
