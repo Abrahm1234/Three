@@ -473,20 +473,22 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 		sampled["Hall_exists"] = 1
 		hall_exists = true
 
-		for node_name in nodes.keys():
-			if not node_name.ends_with("_exists"):
-				continue
-			var room_type: String = node_name.trim_suffix("_exists")
-			if int(sampled.get(node_name, 0)) == 0:
-				continue
-			var tmpl: Dictionary = room_templates.get(room_type, {
-				"area_mean": 8.0,
-				"area_sigma": 2.0,
-				"aspect_mean": 1.2,
-				"aspect_sigma": 0.2,
-				"window": true
-			})
-			if room_type == "Bedroom":
+	for node_name in nodes.keys():
+		if not node_name.endswith("_exists"):
+			continue
+		var room_type: String = node_name.trim_suffix("_exists")
+		if int(sampled.get(node_name, 0)) == 0:
+			continue
+
+		var tmpl: Dictionary = room_templates.get(room_type, {
+			"area_mean": 8.0,
+			"area_sigma": 2.0,
+			"aspect_mean": 1.2,
+			"aspect_sigma": 0.2,
+			"window": true
+		})
+
+		if room_type == "Bedroom":
 			for i in range(beds):
 				var floor_num := 0
 				if floors > 1 and i > 0:
@@ -499,7 +501,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 					"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
 					"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
 				})
-			elif room_type == "Bathroom":
+		elif room_type == "Bathroom":
 			for i in range(baths):
 				var floor_num := 0
 				if floors > 1 and i > 0:
@@ -512,7 +514,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 					"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
 					"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
 				})
-			elif room_type == "Hall":
+		elif room_type == "Hall":
 			var hall_floor := 0 if floors == 1 else 1
 			rooms.append({
 				"id": "hall",
@@ -522,7 +524,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 				"area_pdf": {"mean": 8.0, "sigma": 2.0},
 				"aspect_pdf": {"mean": 2.5, "sigma": 0.5}
 			})
-			elif room_type == "Stair":
+		elif room_type == "Stair":
 			if floors > 1:
 				for f in range(floors):
 					rooms.append({
@@ -551,7 +553,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 				"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
 				"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
 			})
-			elif room_type == "Kitchen":
+		elif room_type == "Kitchen":
 			rooms.append({
 				"id": "kitchen",
 				"type": "Kitchen",
@@ -560,7 +562,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 				"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
 				"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
 			})
-			else:
+		else:
 			rooms.append({
 				"id": room_type.to_lower(),
 				"type": room_type,
@@ -569,7 +571,6 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 				"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
 				"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
 			})
-
 	program.rooms = rooms
 	program.edges = _build_program_edges(sampled, rooms, beds, baths, floors)
 
@@ -595,7 +596,7 @@ func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: i
 		if floors > 1:
 			edges.append({"a_id": "hall", "b_id": "stair_1", "type": "door"})
 			edges.append({"a_id": "entry", "b_id": "stair_0", "type": "door"})
-			else:
+		else:
 			edges.append({"a_id": "entry", "b_id": "hall", "type": "door"})
 
 		for i in range(1, baths):
