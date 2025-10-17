@@ -347,16 +347,16 @@ func _sample_from_bn(req: Dictionary) -> ArchitecturalProgram:
 	var order: Array[String] = _topological_sort()
 	
 	# Fix observed variables from requirements
-        if req.has("bedrooms"):
-                var forced_beds := int(req["bedrooms"])
-                sampled["bedrooms"] = forced_beds
-                sampled["count_Bedroom"] = forced_beds
-                sampled["Bedroom_exists"] = 1 if forced_beds > 0 else 0
-        if req.has("bathrooms"):
-                var forced_baths := int(req["bathrooms"])
-                sampled["bathrooms"] = forced_baths
-                sampled["count_Bathroom"] = forced_baths
-                sampled["Bathroom_exists"] = 1 if forced_baths > 0 else 0
+	if req.has("bedrooms"):
+		var forced_beds := int(req["bedrooms"])
+		sampled["bedrooms"] = forced_beds
+		sampled["count_Bedroom"] = forced_beds
+		sampled["Bedroom_exists"] = 1 if forced_beds > 0 else 0
+	if req.has("bathrooms"):
+		var forced_baths := int(req["bathrooms"])
+		sampled["bathrooms"] = forced_baths
+		sampled["count_Bathroom"] = forced_baths
+		sampled["Bathroom_exists"] = 1 if forced_baths > 0 else 0
 	if req.has("sq_m2"):
 		var sqft := float(req["sq_m2"])
 		var area_edges: PackedFloat64Array = schema_edges.get("total_m2_edges", PackedFloat64Array())
@@ -679,10 +679,10 @@ func _gauss_logpdf(x: float, mu: float, sigma: float) -> float:
 
 # Adjacency prior: probability that two room types should be adjacent
 func p_adj(a: String, b: String) -> float:
-        var sorted := [a.to_lower(), b.to_lower()]
-        sorted.sort()
-        var k := "%s|%s" % [sorted[0], sorted[1]]
-        var priors := {
+	var sorted := [a.to_lower(), b.to_lower()]
+	sorted.sort()
+	var k := "%s|%s" % [sorted[0], sorted[1]]
+	var priors := {
 		"entry|living": 0.95,
 		"kitchen|living": 0.9,
 		"living|living": 0.1,
@@ -697,8 +697,8 @@ func p_adj(a: String, b: String) -> float:
 		"hall|stair": 0.95,    # 🔥 NEW
 		"kitchen|pantry": 0.8, # 🔥 NEW
 		"kitchen|laundry": 0.7,# 🔥 NEW
-        }
-        return float(priors.get(k, 0.2))
+	}
+	return float(priors.get(k, 0.2))
 
 func _adj_exist_key(label: String) -> String:
 	return "adj_exist:%s" % label
