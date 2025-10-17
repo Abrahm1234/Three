@@ -300,21 +300,22 @@ func _ready() -> void:
 		bn.configure_rng(R)
 	add_child(bn)
 
+	var td := TrainingData.new()
 	var corpus: Array = []
 	var used_resplan := false
 	if USE_RESPLAN:
-		corpus = TrainingData.load_resplan_as_programs(RESPLAN_DIR)
+		corpus = td.load_resplan_as_programs(RESPLAN_DIR)
 		if not corpus.is_empty():
 			used_resplan = true
 	if corpus.is_empty():
 		if used_resplan and DEBUG_VERIFY:
 			print("[RESPLAN] corpus empty, falling back to synthetic defaults")
-		var training_data := TrainingData.create_default()
-		corpus.append_array(training_data.single_story)
-		corpus.append_array(training_data.two_story)
-		corpus.append_array(training_data.three_story)
+		var defaults := TrainingData.create_default()
+		corpus.append_array(defaults.single_story)
+		corpus.append_array(defaults.two_story)
+		corpus.append_array(defaults.three_story)
 
-	var binning: Dictionary = TrainingData.bin_corpus(corpus)
+	var binning: Dictionary = td.bin_corpus(corpus)
 	var schema: Dictionary = binning.get("schema", {})
 	if bn and bn.has_method("configure_from_schema"):
 		bn.configure_from_schema(schema)
