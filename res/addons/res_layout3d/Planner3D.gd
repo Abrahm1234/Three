@@ -313,7 +313,7 @@ func _ready() -> void:
 		corpus.append_array(training_data.single_story)
 		corpus.append_array(training_data.two_story)
 		corpus.append_array(training_data.three_story)
-        var binning: Dictionary = TrainingDataClass.bin_corpus(corpus)
+	var binning: Dictionary = TrainingDataClass.bin_corpus(corpus)
 	var schema: Dictionary = binning.get("schema", {})
 	if bn and bn.has_method("configure_from_schema"):
 		bn.configure_from_schema(schema)
