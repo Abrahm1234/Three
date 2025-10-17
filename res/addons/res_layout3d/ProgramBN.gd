@@ -185,9 +185,9 @@ func _build_structure_from_data(instances: Array) -> void:
 		var max_count := int(count_max_dict.get(room_type, 4))
 		var count_domain: Array = []
 		for i in range(max_count + 1):
-				count_domain.append(i)
+			count_domain.append(i)
 		if count_domain.is_empty():
-				count_domain = [0]
+			count_domain = [0]
 		var count_node := BNNode.new()
 		count_node.name = "count_%s" % room_type
 		count_node.domain = count_domain
@@ -199,9 +199,9 @@ func _build_structure_from_data(instances: Array) -> void:
 		var area_labels_variant := area_map.get(room_type)
 		var area_domain: Array = []
 		if area_labels_variant is Array:
-				area_domain = (area_labels_variant as Array).duplicate()
-			else:
-				area_domain = _bin_domain(schema_edges.get("room_area_edges", PackedFloat64Array()))
+			area_domain = (area_labels_variant as Array).duplicate()
+		else:
+			area_domain = _bin_domain(schema_edges.get("room_area_edges", PackedFloat64Array()))
 		var area_node := BNNode.new()
 		area_node.name = "%s_area_bin" % room_type
 		area_node.domain = area_domain
@@ -213,9 +213,9 @@ func _build_structure_from_data(instances: Array) -> void:
 		var aspect_labels_variant := aspect_map.get(room_type)
 		var aspect_domain: Array = []
 		if aspect_labels_variant is Array:
-				aspect_domain = (aspect_labels_variant as Array).duplicate()
-			else:
-				aspect_domain = _bin_domain(schema_edges.get("aspect_edges", PackedFloat64Array()))
+			aspect_domain = (aspect_labels_variant as Array).duplicate()
+		else:
+			aspect_domain = _bin_domain(schema_edges.get("aspect_edges", PackedFloat64Array()))
 		var aspect_node := BNNode.new()
 		aspect_node.name = "%s_aspect_bin" % room_type
 		aspect_node.domain = aspect_domain
