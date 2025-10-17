@@ -298,7 +298,7 @@ func _learn_parameters(instances: Array) -> void:
 				var uniform: Array = []
 				if node.domain.is_empty():
 						uniform = []
-					else:
+				else:
 						var weight := 1.0 / node.domain.size()
 						for _v in node.domain:
 								uniform.append(weight)
@@ -797,7 +797,7 @@ static func _collect_unique_counts(instances: Array, room_type: String) -> Array
 		var count := 0
 		if counts_variant is Dictionary and (counts_variant as Dictionary).has(room_type):
 				count = int((counts_variant as Dictionary)[room_type])
-			else:
+		else:
 				count = int(dict_inst.get("count_%s" % room_type, 0))
 		values[count] = true
 	var result: Array = []
