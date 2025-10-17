@@ -151,7 +151,7 @@ static func _infer_adjacency_from_polys(rooms: Array, edge_min: float = 8.0, gap
                 pairs.append(Vector2i(i, j))
     return pairs
 
-static func load_resplan_as_programs(dir_path: String) -> Array:
+static func _load_resplan_as_programs_impl(dir_path: String) -> Array:
     var manifest_path := dir_path.path_join("plans_manifest.jsonl")
     var result: Array = []
     if not FileAccess.file_exists(manifest_path):
@@ -239,6 +239,9 @@ static func load_resplan_as_programs(dir_path: String) -> Array:
     if DEBUG_VERIFY:
         print("[RESPLAN] loaded=%d" % result.size())
     return result
+
+static func load_resplan_as_programs(dir_path: String) -> Array:
+    return _load_resplan_as_programs_impl(dir_path)
 
 static func _adj_key(a: String, b: String) -> String:
     var a_low := a
