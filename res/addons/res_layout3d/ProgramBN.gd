@@ -12,13 +12,13 @@ class BNNode:
 	var domain: Array  # Possible values
 	var parents: Array[String] = []
 	var cpt: Dictionary = {}  # Conditional Probability Table
-	
+
 	func sample_given(parent_values: Dictionary, rng: RandomNumberGenerator) -> Variant:
 		var key := _cpt_key(parent_values)
 		if not cpt.has(key):
 			# Uniform fallback
 			return domain[rng.randi() % domain.size()] if domain.size() > 0 else null
-		
+
 		var probs: Array = cpt[key]
 		var r := rng.randf()
 		var cumsum := 0.0
@@ -27,7 +27,7 @@ class BNNode:
 			if r <= cumsum:
 				return domain[i]
 		return domain[-1]
-	
+
 	func _cpt_key(parent_vals: Dictionary) -> String:
 		if parents.is_empty():
 			return "root"
@@ -339,13 +339,13 @@ func sample(req: Dictionary) -> ArchitecturalProgram:
 func _sample_from_bn(req: Dictionary) -> ArchitecturalProgram:
 	var program := ArchitecturalProgram.new()
 	program.footprint_m = req.get("footprint", Vector2i(16, 12))
-	
+
 	var rng := _rng()
 	var sampled := {}  # feature -> value
-	
+
 	# 🔥 FIX: Dynamically build topological order from actual BN structure
 	var order: Array[String] = _topological_sort()
-	
+
 	# Fix observed variables from requirements
 	if req.has("bedrooms"):
 		var forced_beds := int(req["bedrooms"])
@@ -377,7 +377,7 @@ func _sample_from_bn(req: Dictionary) -> ArchitecturalProgram:
 
 		sampled[node_name] = node.sample_given(parent_vals, rng)
 
-	
+
 	# Convert sampled values to architectural program
 	return _sampled_to_program(sampled, req)
 
@@ -385,12 +385,12 @@ func _sample_from_bn(req: Dictionary) -> ArchitecturalProgram:
 func _topological_sort() -> Array[String]:
 	var in_degree := {}
 	var adj_list := {}
-	
+
 	# Initialize
 	for node_name in nodes.keys():
 		in_degree[node_name] = 0
 		adj_list[node_name] = []
-	
+
 	# Build adjacency list and count in-degrees
 	for node_name in nodes.keys():
 		var node: BNNode = nodes[node_name]
@@ -399,24 +399,24 @@ func _topological_sort() -> Array[String]:
 				continue
 			adj_list[parent].append(node_name)
 			in_degree[node_name] += 1
-	
+
 	# Find all nodes with in-degree 0
 	var queue: Array[String] = []
 	for node_name in in_degree.keys():
 		if in_degree[node_name] == 0:
 			queue.append(node_name)
-	
+
 	# Process queue
 	var result: Array[String] = []
 	while not queue.is_empty():
 		var current := queue.pop_front()
 		result.append(current)
-		
+
 		for neighbor in adj_list.get(current, []):
 			in_degree[neighbor] -= 1
 			if in_degree[neighbor] == 0:
 				queue.append(neighbor)
-	
+
 	return result
 
 func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalProgram:
@@ -455,7 +455,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 		"Stair": {"area_mean": 4.0, "area_sigma": 1.0, "aspect_mean": 2.5, "aspect_sigma": 0.5, "window": false},
 		"Utility": {"area_mean": 3.5, "area_sigma": 0.8, "aspect_mean": 1.0, "aspect_sigma": 0.1, "window": false}
 	}
-	
+
 	# 🔥 FIX: Force Hall generation for multi-bedroom/multi-floor layouts
 	var force_hall := beds >= 3 or floors > 1  # floors is defined above
 	var hall_exists := _exists_flag(sampled, "Hall")
@@ -525,52 +525,52 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 		edges.append({"a_id": "living", "b_id": "kitchen", "type": "open"})
 
 	edges.append({"a_id": "entry", "b_id": "living", "type": "door"})
-	
+
 	var has_hall := rooms.any(func(r): return r["type"] == "Hall")
-	
+
 	if has_hall:
 		for i in range(beds):
 			if i == 0 and beds > 1:
 				edges.append({"a_id": "living", "b_id": "bed_%d" % (i + 1), "type": "door"})
 			else:
 				edges.append({"a_id": "hall", "b_id": "bed_%d" % (i + 1), "type": "door"})
-		
+
 		if floors > 1:  # floors available
 			edges.append({"a_id": "hall", "b_id": "stair_1", "type": "door"})
 			edges.append({"a_id": "entry", "b_id": "stair_0", "type": "door"})
 		else:
 			edges.append({"a_id": "entry", "b_id": "hall", "type": "door"})
-		
+
 		for i in range(1, baths):
 			edges.append({"a_id": "hall", "b_id": "bath_%d" % (i + 1), "type": "door"})
 	else:
 		for i in range(beds):
 			edges.append({"a_id": "living", "b_id": "bed_%d" % (i + 1), "type": "door"})
-	
+
 	if baths > 0:
 		edges.append({"a_id": "bed_1", "b_id": "bath_1", "type": "door"})
-	
+
 	if _exists_flag(sampled, "Dining"):
 		edges.append({"a_id": "living", "b_id": "dining", "type": "open"})
 		edges.append({"a_id": "dining", "b_id": "kitchen", "type": "open"})
-	
+
 	if _exists_flag(sampled, "Pantry"):
 		edges.append({"a_id": "kitchen", "b_id": "pantry", "type": "door"})
-	
+
 	if _exists_flag(sampled, "Laundry"):
 		edges.append({"a_id": "kitchen", "b_id": "laundry", "type": "door"})
-	
+
 	if _exists_flag(sampled, "Office") or _exists_flag(sampled, "Study"):
 		edges.append({"a_id": "entry", "b_id": "office", "type": "door"})
-	
+
 	if _exists_flag(sampled, "Garage"):
 		edges.append({"a_id": "entry", "b_id": "garage", "type": "door"})
-	
+
 	if _exists_flag(sampled, "Porch"):
 		edges.append({"a_id": "living", "b_id": "porch", "type": "door"})
 
 	program.edges = edges
-	
+
 	print("✓ Generated program: %d rooms, %d edges, %d floors" % [rooms.size(), edges.size(), floors])
 	return program
 
