@@ -217,6 +217,9 @@ const Doors := preload("res://addons/res_layout3d/plan/Doors.gd")
 const PlanCost := preload("res://addons/res_layout3d/plan/PlanCost.gd")
 const Annealer := preload("res://addons/res_layout3d/opt/Annealer.gd")
 const BubbleOverlay := preload("res://addons/res_layout3d/BubbleOverlay.gd")
+const ProgramBN := preload("res://addons/res_layout3d/ProgramBN.gd")
+const ProgramGen := preload("res://addons/res_layout3d/ProgramGen.gd")
+const ArchitecturalProgram := preload("res://addons/res_layout3d/data/ArchitecturalProgram.gd")
 
 @onready var rooms_root: Node3D = $"Rooms"
 @onready var new_btn: Button = $"UI/Root/Panel/VBox/Header/NewBtn"
