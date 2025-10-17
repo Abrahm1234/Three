@@ -216,27 +216,27 @@ func _build_structure_from_data(instances: Array) -> void:
 		pair_labels = []
 	if pair_labels.is_empty():
 		pair_labels = _collect_unique_adj_pair_labels(instances)
-        var type_labels_variant := schema_edges.get("adj_type_labels", [])
-        var type_labels: Array = []
-        if type_labels_variant is Array:
-                type_labels = (type_labels_variant as Array).duplicate()
-        var has_type_nodes := not type_labels.is_empty()
-        for label in pair_labels:
-                var exist_node := BNNode.new()
-                exist_node.name = "adj_%s_exist" % label
-                exist_node.domain = [0, 1]
-                var parts: PackedStringArray = label.split("|", false)
-                if parts.size() == 2:
-                                exist_node.parents = ["%s_exists" % parts[0], "%s_exists" % parts[1]]
-                nodes[exist_node.name] = exist_node
+	var type_labels_variant := schema_edges.get("adj_type_labels", [])
+	var type_labels: Array = []
+	if type_labels_variant is Array:
+		type_labels = (type_labels_variant as Array).duplicate()
+	var has_type_nodes := not type_labels.is_empty()
+	for label in pair_labels:
+		var exist_node := BNNode.new()
+		exist_node.name = "adj_%s_exist" % label
+		exist_node.domain = [0, 1]
+		var parts: PackedStringArray = label.split("|", false)
+		if parts.size() == 2:
+				exist_node.parents = ["%s_exists" % parts[0], "%s_exists" % parts[1]]
+		nodes[exist_node.name] = exist_node
 
-                if has_type_nodes:
-                        var type_node := BNNode.new()
-                        type_node.name = "adj_%s_type" % label
-                        type_node.domain = type_labels.duplicate()
-                        type_node.parents = [exist_node.name, sqft_node.name]
-                        nodes[type_node.name] = type_node
-                        adj_node_pairs[type_node.name] = label
+		if has_type_nodes:
+			var type_node := BNNode.new()
+			type_node.name = "adj_%s_type" % label
+			type_node.domain = type_labels.duplicate()
+			type_node.parents = [exist_node.name, sqft_node.name]
+			nodes[type_node.name] = type_node
+			adj_node_pairs[type_node.name] = label
 	if DEBUG_VERIFY:
 		var edge_count := 0
 		for node_name in nodes.keys():
@@ -442,7 +442,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 	}
 	
 	# 🔥 FIX: Force Hall generation for multi-bedroom/multi-floor layouts
-	var force_hall := beds >= 3 or floors > 1  # ✅ floors is now defined above
+	var force_hall := beds >= 3 or floors > 1  # floors is defined above
 	if force_hall and not sampled.get("Hall_exists", false):
 		print("⚠️ Forcing Hall generation (beds=%d, floors=%d)" % [beds, floors])
 		sampled["Hall_exists"] = true
@@ -457,7 +457,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 				if room_type == "Bedroom":
 					for i in range(beds):
 						var floor_num := 0
-						if floors > 1 and i > 0:  # ✅ floors is available
+						if floors > 1 and i > 0:  # floors available
 							floor_num = 1
 						rooms.append({
 							"id": "bed_%d" % (i + 1), "type": "Bedroom", "floor": floor_num, "needs_window": tmpl["window"],
@@ -467,7 +467,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 				elif room_type == "Bathroom":
 					for i in range(baths):
 						var floor_num := 0
-						if floors > 1 and i > 0:  # ✅ floors is available
+						if floors > 1 and i > 0:  # floors available
 							floor_num = 1
 						rooms.append({
 							"id": "bath_%d" % (i + 1), "type": "Bathroom", "floor": floor_num, "needs_window": tmpl["window"],
@@ -483,7 +483,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 						"aspect_pdf": {"mean": 2.5, "sigma": 0.5}
 					})
 				elif room_type == "Stair":
-					if floors > 1:  # ✅ floors is available
+					if floors > 1:  # floors available
 						for f in range(floors):
 							rooms.append({
 								"id": "stair_%d" % f, "type": "Stair", "floor": f, "needs_window": false,
@@ -500,14 +500,14 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 	program.rooms = rooms
 
 	# Edge generation with Hall support
-        var edges: Array[Dictionary] = []
-        var kitchen_living_exist := 0
-        if sampled.has("adj_Kitchen|Living_exist"):
-                kitchen_living_exist = int(sampled.get("adj_Kitchen|Living_exist", 0))
-        elif sampled.has("adj_Living|Kitchen_exist"):
-                kitchen_living_exist = int(sampled.get("adj_Living|Kitchen_exist", 0))
-        if kitchen_living_exist > 0:
-                edges.append({"a_id": "living", "b_id": "kitchen", "type": "open"})
+	var edges: Array[Dictionary] = []
+	var kitchen_living_exist := 0
+	if sampled.has("adj_Kitchen|Living_exist"):
+		kitchen_living_exist = int(sampled.get("adj_Kitchen|Living_exist", 0))
+	elif sampled.has("adj_Living|Kitchen_exist"):
+		kitchen_living_exist = int(sampled.get("adj_Living|Kitchen_exist", 0))
+	if kitchen_living_exist > 0:
+		edges.append({"a_id": "living", "b_id": "kitchen", "type": "open"})
 
 	edges.append({"a_id": "entry", "b_id": "living", "type": "door"})
 	
@@ -520,7 +520,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 			else:
 				edges.append({"a_id": "hall", "b_id": "bed_%d" % (i + 1), "type": "door"})
 		
-		if floors > 1:  # ✅ floors is available
+		if floors > 1:  # floors available
 			edges.append({"a_id": "hall", "b_id": "stair_1", "type": "door"})
 			edges.append({"a_id": "entry", "b_id": "stair_0", "type": "door"})
 		else:
