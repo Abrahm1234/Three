@@ -715,7 +715,13 @@ static func _bin_program(prog, edges: Dictionary) -> void:
             var pair_label := _room_pair_label(type_a, type_b)
             var key := "%d|%d" % [i, j]
             var exists := pair_lookup.has(key)
-            adj_pairs.append({"a": i, "b": j, "pair": pair_label, "exist": exists ? 1 : 0})
+            var exist_flag := 1 if exists else 0
+            adj_pairs.append({
+                "a": i,
+                "b": j,
+                "pair": pair_label,
+                "exist": exist_flag
+            })
             if not pair_summary.has(pair_label):
                 pair_summary[pair_label] = exists
             elif exists:
