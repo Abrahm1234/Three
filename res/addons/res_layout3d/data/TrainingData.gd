@@ -151,94 +151,141 @@ static func _infer_adjacency_from_polys(rooms: Array, edge_min: float = 8.0, gap
                 pairs.append(Vector2i(i, j))
     return pairs
 
+static func _program_from_resplan(id: String, plan_dict: Dictionary) -> Dictionary:
+    var rooms_raw := plan_dict.get("rooms", [])
+    if rooms_raw is not Array or (rooms_raw as Array).is_empty():
+        return {}
+
+    var rooms: Array = []
+    for entry in rooms_raw:
+        if typeof(entry) != TYPE_DICTIONARY:
+            continue
+        var entry_dict: Dictionary = entry
+        var points_raw := entry_dict.get("polygon", [])
+        if points_raw is not Array:
+            continue
+        var poly := PackedVector2Array()
+        for point in points_raw:
+            if point is Array and point.size() >= 2:
+                poly.push_back(Vector2(float(point[0]), float(point[1])))
+        if poly.size() < 3:
+            continue
+        var label := _norm_label(String(entry_dict.get("label", "Room")))
+        rooms.append({
+            "type": label,
+            "poly": poly,
+            "area": _poly_area(poly),
+            "aspect": _poly_aspect(poly),
+        })
+    if rooms.is_empty():
+        return {}
+
+    var bbox := _poly_aabb(rooms[0]["poly"])
+    var total_area := float(rooms[0]["area"])
+    for idx in range(1, rooms.size()):
+        bbox = bbox.merge(_poly_aabb(rooms[idx]["poly"]))
+        total_area += float(rooms[idx]["area"])
+
+    var adj_pairs := _infer_adjacency_from_polys(rooms)
+    var program := {
+        "id": id,
+        "total_m2": total_area,
+        "footprint_w": bbox.size.x,
+        "footprint_d": bbox.size.y,
+        "footprint": Vector2(bbox.size.x, bbox.size.y),
+        "rooms": [],
+        "adj_pairs": adj_pairs,
+    }
+    for i in range(rooms.size()):
+        var room_data: Dictionary = rooms[i]
+        program["rooms"].append({
+            "id": "room_%d" % i,
+            "type": room_data.get("type", "Room"),
+            "area": room_data.get("area", 0.0),
+            "aspect": room_data.get("aspect", 1.0),
+            "poly": room_data.get("poly", PackedVector2Array()),
+        })
+    return program
+
+static func _scan_resplan_dir(dir_path: String) -> Array:
+    var result: Array = []
+    var stack: Array[String] = [dir_path]
+    while not stack.is_empty():
+        var current := stack.pop_back()
+        var dir := DirAccess.open(current)
+        if dir == null:
+            continue
+        dir.list_dir_begin()
+        while true:
+            var name := dir.get_next()
+            if name == "":
+                break
+            if name.begins_with("."):
+                continue
+            if dir.current_is_dir():
+                stack.append(current.path_join(name))
+                continue
+            if not name.to_lower().ends_with(".json"):
+                continue
+            if name == "plans_manifest.jsonl":
+                continue
+            var path := current.path_join(name)
+            var file := FileAccess.open(path, FileAccess.READ)
+            if file == null:
+                continue
+            var parsed := JSON.parse_string(file.get_as_text())
+            file.close()
+            if typeof(parsed) != TYPE_DICTIONARY:
+                continue
+            var program := _program_from_resplan(path.get_file().get_basename(), parsed)
+            if not program.is_empty():
+                result.append(program)
+        dir.list_dir_end()
+    return result
+
 static func _load_resplan_as_programs_impl(dir_path: String) -> Array:
     var manifest_path := dir_path.path_join("plans_manifest.jsonl")
-    var result: Array = []
-    if not FileAccess.file_exists(manifest_path):
-        push_warning("ResPlan manifest not found: %s" % manifest_path)
+    if FileAccess.file_exists(manifest_path):
+        var result: Array = []
+        var manifest := FileAccess.open(manifest_path, FileAccess.READ)
+        if manifest == null:
+            push_warning("Unable to open ResPlan manifest: %s" % manifest_path)
+        else:
+            while not manifest.eof_reached():
+                var line := manifest.get_line().strip_edges()
+                if line.is_empty():
+                    continue
+                var parsed := JSON.parse_string(line)
+                if typeof(parsed) != TYPE_DICTIONARY:
+                    continue
+                var meta: Dictionary = parsed
+                var json_rel := String(meta.get("json", meta.get("file", "")))
+                if json_rel.is_empty():
+                    continue
+                json_rel = json_rel.replace("\\", "/")
+                var plan_path := dir_path.path_join(json_rel)
+                if not FileAccess.file_exists(plan_path):
+                    continue
+                var file := FileAccess.open(plan_path, FileAccess.READ)
+                if file == null:
+                    continue
+                var plan_data := JSON.parse_string(file.get_as_text())
+                file.close()
+                if typeof(plan_data) != TYPE_DICTIONARY:
+                    continue
+                var program := _program_from_resplan(String(meta.get("id", "")), plan_data)
+                if not program.is_empty():
+                    result.append(program)
+            manifest.close()
+        if DEBUG_VERIFY:
+            print("[RESPLAN] loaded=%d" % result.size())
         return result
-    var manifest := FileAccess.open(manifest_path, FileAccess.READ)
-    if manifest == null:
-        push_warning("Unable to open ResPlan manifest: %s" % manifest_path)
-        return result
-    while not manifest.eof_reached():
-        var line := manifest.get_line().strip_edges()
-        if line.is_empty():
-            continue
-        var parsed := JSON.parse_string(line)
-        if typeof(parsed) != TYPE_DICTIONARY:
-            continue
-        var meta: Dictionary = parsed
-        var json_rel := String(meta.get("json", meta.get("file", "")))
-        if json_rel.is_empty():
-            continue
-        json_rel = json_rel.replace("\\", "/")
-        var plan_path := dir_path.path_join(json_rel)
-        if not FileAccess.file_exists(plan_path):
-            continue
-        var file := FileAccess.open(plan_path, FileAccess.READ)
-        if file == null:
-            continue
-        var plan_data := JSON.parse_string(file.get_as_text())
-        file.close()
-        if typeof(plan_data) != TYPE_DICTIONARY:
-            continue
-        var plan_dict: Dictionary = plan_data
-        var rooms_raw := plan_dict.get("rooms", [])
-        if rooms_raw is not Array or (rooms_raw as Array).is_empty():
-            continue
-        var rooms: Array = []
-        for entry in rooms_raw:
-            if typeof(entry) != TYPE_DICTIONARY:
-                continue
-            var entry_dict: Dictionary = entry
-            var points_raw := entry_dict.get("polygon", [])
-            if points_raw is not Array:
-                continue
-            var poly := PackedVector2Array()
-            for point in points_raw:
-                if point is Array and point.size() >= 2:
-                    poly.push_back(Vector2(float(point[0]), float(point[1])))
-            if poly.size() < 3:
-                continue
-            var label := _norm_label(String(entry_dict.get("label", "Room")))
-            rooms.append({
-                "type": label,
-                "poly": poly,
-                "area": _poly_area(poly),
-                "aspect": _poly_aspect(poly),
-            })
-        if rooms.is_empty():
-            continue
-        var bbox := _poly_aabb(rooms[0]["poly"])
-        var total_area := float(rooms[0]["area"])
-        for idx in range(1, rooms.size()):
-            bbox = bbox.merge(_poly_aabb(rooms[idx]["poly"]))
-            total_area += float(rooms[idx]["area"])
-        var adj_pairs := _infer_adjacency_from_polys(rooms)
-        var program := {
-            "id": meta.get("id", ""),
-            "total_m2": total_area,
-            "footprint_w": bbox.size.x,
-            "footprint_d": bbox.size.y,
-            "footprint": Vector2(bbox.size.x, bbox.size.y),
-            "rooms": [],
-            "adj_pairs": adj_pairs,
-        }
-        for i in range(rooms.size()):
-            var room_data: Dictionary = rooms[i]
-            program["rooms"].append({
-                "id": "room_%d" % i,
-                "type": room_data.get("type", "Room"),
-                "area": room_data.get("area", 0.0),
-                "aspect": room_data.get("aspect", 1.0),
-                "poly": room_data.get("poly", PackedVector2Array()),
-            })
-        result.append(program)
-    manifest.close()
+
+    push_warning("ResPlan manifest not found: %s" % manifest_path)
+    var scanned := _scan_resplan_dir(dir_path)
     if DEBUG_VERIFY:
-        print("[RESPLAN] loaded=%d" % result.size())
-    return result
+        print("[RESPLAN] manifest missing, scanned %d programs" % scanned.size())
+    return scanned
 
 static func load_resplan_as_programs(dir_path: String) -> Array:
     return _load_resplan_as_programs_impl(dir_path)

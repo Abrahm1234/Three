@@ -271,6 +271,17 @@ var roof_root: Node3D
 const WALL_H := 3.0
 const DEBUG_VERIFY := true
 
+func _ensure_cost_tree() -> void:
+	if cost_tree == null:
+		return
+	if cost_tree.columns < 2:
+		cost_tree.columns = 2
+		cost_tree.set_column_titles_visible(true)
+		cost_tree.set_column_title(0, "Term")
+		cost_tree.set_column_title(1, "Value")
+	if cost_tree.get_root() == null:
+		cost_tree.create_item()
+
 func _ready() -> void:
 	_bind_key("ui_stage_bubble", KEY_1)
 	_bind_key("ui_stage_schematic", KEY_2)
@@ -299,6 +310,8 @@ func _ready() -> void:
 	if bn and bn.has_method("configure_rng"):
 		bn.configure_rng(R)
 	add_child(bn)
+	plan_cost = PlanCost.new()
+	_ensure_cost_tree()
 
 	var corpus: Array = []
 	var used_resplan := false
@@ -338,6 +351,8 @@ func _ready() -> void:
 	w_dims.value_changed.connect(func(_v): _apply_weights())
 	w_shape.value_changed.connect(func(_v): _apply_weights())
 	w_exposure.value_changed.connect(func(_v): _apply_weights())
+	if plan_cost != null:
+		_apply_weights()
 	for sb in [floors_sb, bedrooms_sb, bathrooms_sb, sqft_sb]:
 		sb.value_changed.connect(func(_v): _new_program())
 func _ensure_roof_root() -> void:
@@ -749,6 +764,8 @@ func _optimize_partition(iterations: int, source: Partition) -> Partition:
 	var steps := max(1, iterations)
 	var entry_idx := _entry_room_index_for(working)
 	var terms := _program_terms()
+	if plan_cost == null:
+		plan_cost = PlanCost.new()
 	plan_cost.allowed_pairs = _allowed_idx_pairs(working)
 	plan_cost.allowed_label_pairs = _allowed_label_pairs()
 	var annealer := Annealer.new()
@@ -1125,7 +1142,10 @@ func _update_cost_ui() -> void:
 		return
 
 	cost_tree.clear()
-	var root := cost_tree.create_item()
+	_ensure_cost_tree()
+	var root := cost_tree.get_root()
+	if root == null:
+		root = cost_tree.create_item()
 
 	var metrics := _metrics_for(partition)
 
