@@ -476,9 +476,10 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
         hall_exists = true
 
     for node_name in nodes.keys():
-        if not node_name.endswith("_exists"):
+        var node_key: String = String(node_name)
+        if not node_key.ends_with("_exists"):
             continue
-        var room_type: String = node_name.trim_suffix("_exists")
+        var room_type: String = node_key.left(node_key.length() - "_exists".length())
         if int(sampled.get(node_name, 0)) == 0:
             continue
 
