@@ -310,9 +310,9 @@ func _ready() -> void:
 	if bn and bn.has_method("configure_rng"):
 		bn.configure_rng(R)
 	add_child(bn)
+	# PlanCost is a RefCounted service; keep it off the scene tree.
 	plan_cost = PlanCost.new()
 	_ensure_cost_tree()
-
 	var corpus: Array = []
 	var used_resplan := false
 	if USE_RESPLAN:
