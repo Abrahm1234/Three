@@ -3,6 +3,9 @@ class_name TrainingData
 
 const DEBUG_VERIFY := true
 
+const RESPLAN_DIR := "res://addons/res_layout3d/data/datasets/resplan"
+const RESPLAN_MANIFEST := RESPLAN_DIR + "/plans_manifest.jsonl"
+
 const RESPLAN_TYPES := {
     "living": "Living",
     "living room": "Living",
@@ -194,7 +197,9 @@ static func _program_from_resplan(id: String, plan_dict: Dictionary) -> Dictiona
         "footprint_d": bbox.size.y,
         "footprint": Vector2(bbox.size.x, bbox.size.y),
         "rooms": [],
-        "adj_pairs": adj_pairs,
+        "adj_pairs": [],
+        "adjacencies": [],
+        "adj_summary": {},
     }
     for i in range(rooms.size()):
         var room_data: Dictionary = rooms[i]
@@ -205,6 +210,41 @@ static func _program_from_resplan(id: String, plan_dict: Dictionary) -> Dictiona
             "aspect": room_data.get("aspect", 1.0),
             "poly": room_data.get("poly", PackedVector2Array()),
         })
+    var room_counts := {}
+    for room_dict in program["rooms"]:
+        var r_type := String(room_dict.get("type", "Room"))
+        room_counts[r_type] = int(room_counts.get(r_type, 0)) + 1
+    program["room_counts"] = room_counts
+    var room_exists := {}
+    for t in room_counts.keys():
+        room_exists["%s_exists" % t] = 1
+    program["room_exists"] = room_exists
+    program["bedrooms"] = int(room_counts.get("Bedroom", 0))
+    program["bathrooms"] = int(room_counts.get("Bathroom", 0))
+
+    var adjacency_records: Array = []
+    var adj_list: Array = []
+    var adj_summary := {}
+    for pair in adj_pairs:
+        var a_idx := int(pair.x)
+        var b_idx := int(pair.y)
+        if a_idx < 0 or b_idx < 0 or a_idx >= program["rooms"].size() or b_idx >= program["rooms"].size():
+            continue
+        var room_a: Dictionary = program["rooms"][a_idx]
+        var room_b: Dictionary = program["rooms"][b_idx]
+        var a_type := String(room_a.get("type", ""))
+        var b_type := String(room_b.get("type", ""))
+        if a_type == "" or b_type == "":
+            continue
+        var label := _adj_key(a_type, b_type)
+        var a_id := String(room_a.get("id", "room_%d" % a_idx))
+        var b_id := String(room_b.get("id", "room_%d" % b_idx))
+        adjacency_records.append({"a": a_id, "b": b_id, "type": "door"})
+        adj_list.append({"pair": label, "a_id": a_id, "b_id": b_id, "exist": true})
+        adj_summary[label] = {"exist": true}
+    program["adjacencies"] = adjacency_records
+    program["adj_pairs"] = adj_list
+    program["adj_summary"] = adj_summary
     return program
 
 static func _scan_resplan_dir(dir_path: String) -> Array:
@@ -287,8 +327,11 @@ static func _load_resplan_as_programs_impl(dir_path: String) -> Array:
         print("[RESPLAN] manifest missing, scanned %d programs" % scanned.size())
     return scanned
 
-static func load_resplan_as_programs(dir_path: String) -> Array:
-    return _load_resplan_as_programs_impl(dir_path)
+static func load_resplan_as_programs(dir_path: String = RESPLAN_DIR) -> Array:
+    var programs := _load_resplan_as_programs_impl(dir_path)
+    if DEBUG_VERIFY:
+        print("[RESPLAN] loaded=%d" % programs.size())
+    return programs
 
 static func _adj_key(a: String, b: String) -> String:
     var a_low := a
@@ -495,9 +538,106 @@ static func default_binning_config() -> Dictionary:
         "n_bins_foot_d": 6,
         "n_bins_room_area": 7,
         "n_bins_aspect": 6,
+}
+
+static func derive_schema_from_corpus(instances: Array) -> Dictionary:
+    var types := {}
+    var adj := {}
+    var count_max := {}
+    for prog in instances:
+        var dict_prog := _program_to_dict(prog)
+        var counts: Dictionary = dict_prog.get("room_counts", {})
+        for t in counts.keys():
+            types[t] = true
+            var c := int(counts[t])
+            var prev := int(count_max.get(t, 0))
+            if c > prev:
+                count_max[t] = c
+        for entry in dict_prog.get("adj_pairs", []):
+            if entry is Dictionary:
+                var label := String(entry.get("pair", ""))
+                if label != "":
+                    adj[label] = true
+        var summary_var := dict_prog.get("adj_summary", {})
+        if summary_var is Dictionary:
+            for label in summary_var.keys():
+                if String(label) != "":
+                    adj[String(label)] = true
+    var type_list: Array = types.keys()
+    type_list.sort()
+    var adj_list: Array = adj.keys()
+    adj_list.sort()
+    var schema := {
+        "room_types": type_list,
+        "room_type_labels": type_list,
+        "adj_pairs": adj_list,
+        "adj_pair_labels": adj_list,
+        "adj_pairs_count": adj_list.size(),
+        "count_max_by_type": count_max,
+        "adj_type_labels": [],
+        "exist_labels": [0, 1],
+    }
+    return schema
+
+static func _merge_schema(base: Dictionary, override: Dictionary, edges: Dictionary) -> Dictionary:
+    var merged := base.duplicate(true)
+    var override_copy := override.duplicate(true)
+
+    var override_types := override_copy.get("room_types", override_copy.get("room_type_labels", []))
+    if override_types is Array:
+        var merged_types: Array = merged.get("room_types", [])
+        for t in override_types:
+            if not merged_types.has(t):
+                merged_types.append(t)
+        merged_types.sort()
+        merged["room_types"] = merged_types
+        merged["room_type_labels"] = merged_types
+
+    var override_adj := override_copy.get("adj_pair_labels", override_copy.get("adj_pairs", []))
+    if override_adj is Array:
+        var merged_adj: Array = merged.get("adj_pairs", [])
+        for label in override_adj:
+            if not merged_adj.has(label):
+                merged_adj.append(label)
+        merged_adj.sort()
+        merged["adj_pairs"] = merged_adj
+        merged["adj_pair_labels"] = merged_adj
+        merged["adj_pairs_count"] = merged_adj.size()
+
+    var count_override := override_copy.get("count_max_by_type", {})
+    if count_override is Dictionary:
+        var merged_counts: Dictionary = merged.get("count_max_by_type", {})
+        for key in count_override.keys():
+            var val := int(count_override[key])
+            var prev := int(merged_counts.get(key, 0))
+            if val > prev:
+                merged_counts[key] = val
+        merged["count_max_by_type"] = merged_counts
+
+    merged["total_m2_edges"] = edges.get("total_m2_edges", merged.get("total_m2_edges", PackedFloat64Array()))
+    merged["footprint_w_edges"] = edges.get("footprint_w_edges", merged.get("footprint_w_edges", PackedFloat64Array()))
+    merged["footprint_d_edges"] = edges.get("footprint_d_edges", merged.get("footprint_d_edges", PackedFloat64Array()))
+    merged["room_area_edges"] = edges.get("room_area_edges", merged.get("room_area_edges", PackedFloat64Array()))
+    merged["aspect_edges"] = edges.get("aspect_edges", merged.get("aspect_edges", PackedFloat64Array()))
+    merged["bin_edges"] = {
+        "total_sqft": merged.get("total_m2_edges", PackedFloat64Array()),
+        "width": merged.get("footprint_w_edges", PackedFloat64Array()),
+        "depth": merged.get("footprint_d_edges", PackedFloat64Array()),
+        "area": merged.get("room_area_edges", PackedFloat64Array()),
+        "aspect": merged.get("aspect_edges", PackedFloat64Array()),
     }
 
-static func bin_corpus(instances: Array, cfg: Dictionary = default_binning_config()) -> Dictionary:
+    return merged
+
+static func bin_corpus(instances: Array, options = null) -> Dictionary:
+    var provided_schema: Dictionary = {}
+    var cfg: Dictionary = default_binning_config()
+    if options is Dictionary:
+        var dict_options: Dictionary = options
+        if dict_options.has("room_types") or dict_options.has("room_type_labels"):
+            provided_schema = dict_options
+        elif dict_options.has("method") or dict_options.has("sqft_edges"):
+            cfg = dict_options
     var edges := _prepare_edges(instances, cfg)
     apply_binning(instances, edges)
 
@@ -506,6 +646,9 @@ static func bin_corpus(instances: Array, cfg: Dictionary = default_binning_confi
         exported.append(_program_to_dict(prog))
 
     var schema := _build_schema(exported, edges)
+    if not provided_schema.is_empty():
+        schema = _merge_schema(schema, provided_schema, edges)
+
     var adj_pairs_variant := schema.get("adj_pair_labels", schema.get("adj_pairs", []))
     var adj_pairs: Array = []
     if adj_pairs_variant is Array:

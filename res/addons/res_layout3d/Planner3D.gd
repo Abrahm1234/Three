@@ -327,8 +327,11 @@ func _ready() -> void:
 		corpus.append_array(defaults.two_story)
 		corpus.append_array(defaults.three_story)
 
-	var binning: Dictionary = TrainingData.bin_corpus(corpus)
+	var schema_hint := TrainingData.derive_schema_from_corpus(corpus)
+	var binning: Dictionary = TrainingData.bin_corpus(corpus, schema_hint)
 	var schema: Dictionary = binning.get("schema", {})
+	if schema.is_empty() and not schema_hint.is_empty():
+		schema = schema_hint
 	if bn and bn.has_method("configure_from_schema"):
 		bn.configure_from_schema(schema)
 	var binned_instances: Array = binning.get("instances", [])
@@ -486,7 +489,7 @@ func _allowed_door_types() -> Dictionary:
 	var types := {}
 	if program == null: return types
 	for e in program.edges:
-		var t := String(e.get("kind","door"))
+		var t := String(e.get("kind", e.get("type", "door")))
 		if t != "door" and t != "open": continue
 		var a := String(e.get("a_id","")); var b := String(e.get("b_id",""))
 		if a == "" or b == "": continue
@@ -542,6 +545,7 @@ func _doors_from_partition(part: Partition) -> Dictionary:
 	if types.size() > 0:
 		print("  Allowed: %s" % [types.keys()])
 	
+	var skipped: Array[String] = []
 	for i in range(part.rooms.size()):
 		for j in range(i + 1, part.rooms.size()):
 			var a_id := ids[i]
@@ -549,38 +553,42 @@ func _doors_from_partition(part: Partition) -> Dictionary:
 			var key := _door_key(a_id, b_id)
 			if not types.is_empty() and not types.has(key):
 				continue
-			
+
 			var ra: Rect2 = part.rooms[i].rect
 			var rb: Rect2 = part.rooms[j].rect
 			var wall := GeomUtils.shared_wall(ra, rb)
-			
+
 			if wall.is_empty():
+				skipped.append("%s(no shared wall)" % key)
 				continue
-			
+
 			var start: Vector2 = wall["start"]
 			var end: Vector2 = wall["end"]
 			var L := (end - start).length()
 			if L <= 1e-6:
+				skipped.append("%s(length≈0)" % key)
 				continue
-			
+
 			var typ := String(types.get(key, "door"))
 			var clearance := program.door_clear if program != null else 0.1
 			var door_w := program.default_door_w if program != null else 0.9
 
 			var corner_bias := 0.2
 			var t := corner_bias if randf() < 0.5 else (1.0 - corner_bias)
-			
+
 			if typ == "open":
 				door_w = max(0.0, L - 2.0 * clearance)
 				t = 0.5
-			
+
 			var half := clamp(0.5 * door_w / max(1e-6, L), 0.01, 0.49)
 			out[key] = {"t": clamp(t, half, 1.0 - half), "w": door_w}
-			
+
 			print("🚪 Created door: %s | type=%s t=%.2f w=%.2f" % [key, typ, t, door_w])
-	
-	print("✓ Total doors created: %d" % out.size())
-	return out
+
+        print("✓ Total doors created: %d" % out.size())
+        if skipped.size() > 0:
+                print("🚪 Skipped (geometry): %s" % str(skipped))
+        return out
 
 func _allowed_idx_pairs(part: Partition) -> Array[Vector2i]:
 	var pairs: Array[Vector2i] = []
