@@ -583,53 +583,53 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: int, floors: int) -> Array[Dictionary]:
 	var edges: Array[Dictionary] = []
 
-        if _adj_exist_value(sampled, "Kitchen|Living") > 0:
-                edges.append({"a_id": "living", "b_id": "kitchen", "type": "open", "kind": "open"})
+	if _adj_exist_value(sampled, "Kitchen|Living") > 0:
+		edges.append({"a_id": "living", "b_id": "kitchen", "type": "open", "kind": "open"})
 
-        edges.append({"a_id": "entry", "b_id": "living", "type": "door", "kind": "door"})
+	edges.append({"a_id": "entry", "b_id": "living", "type": "door", "kind": "door"})
 
 	var has_hall := rooms.any(func(r): return r.get("type", "") == "Hall")
 	if has_hall:
 		for i in range(beds):
 			var bed_id := "bed_%d" % (i + 1)
 			var anchor := "living" if i == 0 and beds > 1 else "hall"
-                        edges.append({"a_id": anchor, "b_id": bed_id, "type": "door", "kind": "door"})
+			edges.append({"a_id": anchor, "b_id": bed_id, "type": "door", "kind": "door"})
 
 		if floors > 1:
-                        edges.append({"a_id": "hall", "b_id": "stair_1", "type": "door", "kind": "door"})
-                        edges.append({"a_id": "entry", "b_id": "stair_0", "type": "door", "kind": "door"})
-                else:
-                        edges.append({"a_id": "entry", "b_id": "hall", "type": "door", "kind": "door"})
+			edges.append({"a_id": "hall", "b_id": "stair_1", "type": "door", "kind": "door"})
+			edges.append({"a_id": "entry", "b_id": "stair_0", "type": "door", "kind": "door"})
+		else:
+			edges.append({"a_id": "entry", "b_id": "hall", "type": "door", "kind": "door"})
 
-                for i in range(1, baths):
-                        edges.append({"a_id": "hall", "b_id": "bath_%d" % (i + 1), "type": "door", "kind": "door"})
-        else:
-                for i in range(beds):
-                        edges.append({"a_id": "living", "b_id": "bed_%d" % (i + 1), "type": "door", "kind": "door"})
+		for i in range(1, baths):
+			edges.append({"a_id": "hall", "b_id": "bath_%d" % (i + 1), "type": "door", "kind": "door"})
+	else:
+		for i in range(beds):
+			edges.append({"a_id": "living", "b_id": "bed_%d" % (i + 1), "type": "door", "kind": "door"})
 
-        if baths > 0:
-                edges.append({"a_id": "bed_1", "b_id": "bath_1", "type": "door", "kind": "door"})
+	if baths > 0:
+		edges.append({"a_id": "bed_1", "b_id": "bath_1", "type": "door", "kind": "door"})
 
-        if _exists_flag(sampled, "Dining"):
-                edges.append({"a_id": "living", "b_id": "dining", "type": "open", "kind": "open"})
-                edges.append({"a_id": "dining", "b_id": "kitchen", "type": "open", "kind": "open"})
+	if _exists_flag(sampled, "Dining"):
+		edges.append({"a_id": "living", "b_id": "dining", "type": "open", "kind": "open"})
+		edges.append({"a_id": "dining", "b_id": "kitchen", "type": "open", "kind": "open"})
 
-        if _exists_flag(sampled, "Pantry"):
-                edges.append({"a_id": "kitchen", "b_id": "pantry", "type": "door", "kind": "door"})
+	if _exists_flag(sampled, "Pantry"):
+		edges.append({"a_id": "kitchen", "b_id": "pantry", "type": "door", "kind": "door"})
 
-        if _exists_flag(sampled, "Laundry"):
-                edges.append({"a_id": "kitchen", "b_id": "laundry", "type": "door", "kind": "door"})
+	if _exists_flag(sampled, "Laundry"):
+		edges.append({"a_id": "kitchen", "b_id": "laundry", "type": "door", "kind": "door"})
 
-        if _exists_flag(sampled, "Office") or _exists_flag(sampled, "Study"):
-                edges.append({"a_id": "entry", "b_id": "office", "type": "door", "kind": "door"})
+	if _exists_flag(sampled, "Office") or _exists_flag(sampled, "Study"):
+		edges.append({"a_id": "entry", "b_id": "office", "type": "door", "kind": "door"})
 
-        if _exists_flag(sampled, "Garage"):
-                edges.append({"a_id": "entry", "b_id": "garage", "type": "door", "kind": "door"})
+	if _exists_flag(sampled, "Garage"):
+		edges.append({"a_id": "entry", "b_id": "garage", "type": "door", "kind": "door"})
 
-        if _exists_flag(sampled, "Porch"):
-                edges.append({"a_id": "living", "b_id": "porch", "type": "door", "kind": "door"})
+	if _exists_flag(sampled, "Porch"):
+		edges.append({"a_id": "living", "b_id": "porch", "type": "door", "kind": "door"})
 
-        return edges
+	return edges
 ## Legacy sampling method (fallback)
 func _sample_legacy(req: Dictionary) -> ArchitecturalProgram:
 	var program := ArchitecturalProgram.new()
