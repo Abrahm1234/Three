@@ -272,54 +272,56 @@ func _learn_parameters(instances: Array) -> void:
 		var counts := {}
 
 		for inst in instances:
-				var dict_inst := _instance_to_dict(inst)
-				if dict_inst.is_empty():
-						continue
-
-				var parent_vals := {}
-				var missing_parent := false
-				for parent in node.parents:
-						if not dict_inst.has(parent):
-								missing_parent = true
-								break
-						parent_vals[parent] = dict_inst[parent]
-				if missing_parent:
-						continue
-
-				if not dict_inst.has(node_name):
-						continue
-				var key := node._cpt_key(parent_vals)
-				if not counts.has(key):
-						counts[key] = {}
-				var value = dict_inst[node_name]
-				counts[key][value] = int(counts[key].get(value, 0)) + 1
-
-		if counts.is_empty():
-				var uniform: Array = []
-				if node.domain.is_empty():
-						uniform = []
-					else:
-						var weight := 1.0 / node.domain.size()
-						for _v in node.domain:
-								uniform.append(weight)
-				node.cpt["root"] = uniform
+			var dict_inst := _instance_to_dict(inst)
+			if dict_inst.is_empty():
 				continue
 
+			var parent_vals := {}
+			var missing_parent := false
+			for parent in node.parents:
+				if not dict_inst.has(parent):
+					missing_parent = true
+					break
+				parent_vals[parent] = dict_inst[parent]
+			if missing_parent:
+				continue
+
+			if not dict_inst.has(node_name):
+				continue
+			var key := node._cpt_key(parent_vals)
+			if not counts.has(key):
+				counts[key] = {}
+			var value = dict_inst[node_name]
+			counts[key][value] = int(counts[key].get(value, 0)) + 1
+
+		if counts.is_empty():
+			var uniform: Array = []
+			if node.domain.is_empty():
+				uniform = []
+			else:
+				var weight := 1.0 / node.domain.size()
+				for _v in node.domain:
+					uniform.append(weight)
+			node.cpt["root"] = uniform
+			continue
+
 		for key in counts.keys():
-				var probs: Array = []
-				var total := 0.0
-				for domain_val in node.domain:
-						total += float(counts[key].get(domain_val, 0)) + 1.0
-				for domain_val in node.domain:
-						var count_val := float(counts[key].get(domain_val, 0)) + 1.0
-						probs.append(count_val / total)
-				node.cpt[key] = probs
+			var probs: Array = []
+			var total := 0.0
+			for domain_val in node.domain:
+				total += float(counts[key].get(domain_val, 0)) + 1.0
+			for domain_val in node.domain:
+				var count_val := float(counts[key].get(domain_val, 0)) + 1.0
+				probs.append(count_val / total)
+			node.cpt[key] = probs
+
 	if DEBUG_VERIFY:
 		var row_count := 0
 		for node_name in nodes.keys():
 			var node_ref: BNNode = nodes[node_name]
 			row_count += node_ref.cpt.size()
 		print("[BN] trained: instances=%d cpt_rows=%d nodes=%d" % [instances.size(), row_count, nodes.size()])
+
 func debug_dump_node(name: String) -> void:
 	if not DEBUG_VERIFY:
 		return

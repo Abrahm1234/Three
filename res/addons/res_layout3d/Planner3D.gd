@@ -537,14 +537,15 @@ func _doors_from_partition_array(part: Partition) -> Array[Dictionary]:
 
 func _doors_from_partition(part: Partition) -> Dictionary:
 	var out := {}
-	if part == null: return out
+	if part == null:
+		return out
 	var ids := _ids_by_room_index(part)
 	var types := _allowed_door_types()
-	
+
 	print("🚪 _doors_from_partition: Found %d allowed door types" % types.size())
 	if types.size() > 0:
 		print("  Allowed: %s" % [types.keys()])
-	
+
 	var skipped: Array[String] = []
 	for i in range(part.rooms.size()):
 		for j in range(i + 1, part.rooms.size()):
@@ -585,10 +586,10 @@ func _doors_from_partition(part: Partition) -> Dictionary:
 
 			print("🚪 Created door: %s | type=%s t=%.2f w=%.2f" % [key, typ, t, door_w])
 
-        print("✓ Total doors created: %d" % out.size())
-        if skipped.size() > 0:
-                print("🚪 Skipped (geometry): %s" % str(skipped))
-        return out
+	print("✓ Total doors created: %d" % out.size())
+	if skipped.size() > 0:
+		print("🚪 Skipped (geometry): %s" % str(skipped))
+	return out
 
 func _allowed_idx_pairs(part: Partition) -> Array[Vector2i]:
 	var pairs: Array[Vector2i] = []
