@@ -269,7 +269,7 @@ static func _scan_resplan_dir(dir_path: String) -> Array:
                 continue
             if name == "plans_manifest.jsonl":
                 continue
-            var path := current.path_join(name)
+            var path: String = current.path_join(name)
             var file := FileAccess.open(path, FileAccess.READ)
             if file == null:
                 continue
