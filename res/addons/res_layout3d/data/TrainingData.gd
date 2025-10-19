@@ -1,1084 +1,1429 @@
 extends Resource
 class_name TrainingData
 
+const DEBUG_VERIFY := true
+
+const RESPLAN_DIR := "res://addons/res_layout3d/data/datasets/resplan"
+const RESPLAN_MANIFEST := RESPLAN_DIR + "/plans_manifest.jsonl"
+
+const RESPLAN_TYPES := {
+"living": "Living",
+"living room": "Living",
+"great room": "Living",
+"lounge": "Living",
+"family": "Living",
+"den": "Living",
+"kitchen": "Kitchen",
+"kitch": "Kitchen",
+"dining": "Dining",
+"dine": "Dining",
+"nook": "Dining",
+"breakfast": "Dining",
+"bed": "Bedroom",
+"bedroom": "Bedroom",
+"primary bedroom": "Bedroom",
+"master": "Bedroom",
+"suite": "Bedroom",
+"guest": "Bedroom",
+"bath": "Bathroom",
+"bathroom": "Bathroom",
+"wc": "Bathroom",
+"toilet": "Bathroom",
+"powder": "Bathroom",
+"ensuite": "Bathroom",
+"entry": "Entry",
+"foyer": "Entry",
+"mud": "Entry",
+"mudroom": "Entry",
+"vestibule": "Entry",
+"hall": "Hall",
+"hallway": "Hall",
+"corridor": "Hall",
+"corrid": "Hall",
+"landing": "Hall",
+"laundry": "Laundry",
+"utility": "Laundry",
+"pantry": "Closet",
+"closet": "Closet",
+"storage": "Closet",
+"store": "Closet",
+"linen": "Closet",
+"office": "Office",
+"study": "Office",
+"studio": "Office",
+"library": "Office",
+"garage": "Garage",
+"carport": "Garage",
+"patio": "Patio",
+"balcony": "Patio",
+"terrace": "Patio",
+"deck": "Patio",
+"porch": "Patio",
+"veranda": "Patio",
+"stair": "Stair",
+"stairs": "Stair",
+"stairway": "Stair",
+}
+
+const RESPLAN_EXCLUDE_TYPES := {
+"Patio": true,
+"Garage": true,
+"Porch": true,
+"Other": true
+}
+
+static func _norm_label(source: String) -> String:
+    var key := source.strip_edges().to_lower()
+    for pattern in RESPLAN_TYPES.keys():
+        if key.find(pattern) >= 0:
+            return RESPLAN_TYPES[pattern]
+    return "Other"
+
+static func _poly_area(poly: PackedVector2Array) -> float:
+    var n := poly.size()
+    if n < 3:
+        return 0.0
+    var twice_area := 0.0
+    for i in n:
+        var j := (i + 1) % n
+        twice_area += poly[i].x * poly[j].y - poly[j].x * poly[i].y
+    return abs(twice_area) * 0.5
+
+static func _poly_aabb(poly: PackedVector2Array) -> Rect2:
+    if poly.is_empty():
+        return Rect2(Vector2.ZERO, Vector2.ZERO)
+    var rect := Rect2(poly[0], Vector2.ZERO)
+    for p in poly:
+        rect = rect.expand(p)
+    return rect
+
+static func _poly_aspect(poly: PackedVector2Array) -> float:
+    var aabb := _poly_aabb(poly)
+    var w := max(aabb.size.x, 1e-6)
+    var h := max(aabb.size.y, 1e-6)
+    return max(w, h) / max(min(w, h), 1e-6)
+
+static func _shared_edge_length(a: PackedVector2Array, b: PackedVector2Array, tol: float = 1.0) -> float:
+    var total := 0.0
+    for i in a.size():
+        var a0 := a[i]
+        var a1 := a[(i + 1) % a.size()]
+        var seg_a := Rect2(a0, Vector2.ZERO).expand(a1).grow(tol)
+        var dir_a := a1 - a0
+        for j in b.size():
+            var b0 := b[j]
+            var b1 := b[(j + 1) % b.size()]
+            var seg_b := Rect2(b0, Vector2.ZERO).expand(b1).grow(tol)
+            if not seg_a.intersects(seg_b):
+                continue
+            var dir_b := b1 - b0
+            var cross := abs(dir_a.x * dir_b.y - dir_a.y * dir_b.x)
+            if cross > 1e-3:
+                continue
+            var axis := dir_a
+            if axis.length() <= 1e-5:
+                continue
+            axis = axis.normalized()
+            var a_proj_0 := axis.dot(a0)
+            var a_proj_1 := axis.dot(a1)
+            if a_proj_1 < a_proj_0:
+                var tmp := a_proj_0
+                a_proj_0 = a_proj_1
+                a_proj_1 = tmp
+            var b_proj_0 := axis.dot(b0)
+            var b_proj_1 := axis.dot(b1)
+            if b_proj_1 < b_proj_0:
+                var tmp2 := b_proj_0
+                b_proj_0 = b_proj_1
+                b_proj_1 = tmp2
+            var overlap: float = float(min(a_proj_1, b_proj_1) - max(a_proj_0, b_proj_0))
+            if overlap > -tol:
+                total += max(0.0, overlap)
+    return total
+
+static func _segment_distance_sq(p: Vector2, a: Vector2, b: Vector2) -> float:
+    var ab := b - a
+    var t := 0.0
+    var denom := ab.length_squared()
+    if denom > 0.0:
+        t = clamp((p - a).dot(ab) / denom, 0.0, 1.0)
+    var closest := a + ab * t
+    return p.distance_squared_to(closest)
+
+static func _min_gap(a: PackedVector2Array, b: PackedVector2Array) -> float:
+    var min_sq := INF
+    for i in a.size():
+        var a0 := a[i]
+        var a1 := a[(i + 1) % a.size()]
+        for j in b.size():
+            var b0 := b[j]
+            var b1 := b[(j + 1) % b.size()]
+            var seg_inter := Geometry2D.segment_intersects_segment(a0, a1, b0, b1)
+            if seg_inter != null:
+                return 0.0
+            min_sq = min(min_sq, _segment_distance_sq(a0, b0, b1))
+            min_sq = min(min_sq, _segment_distance_sq(a1, b0, b1))
+            min_sq = min(min_sq, _segment_distance_sq(b0, a0, a1))
+            min_sq = min(min_sq, _segment_distance_sq(b1, a0, a1))
+    return sqrt(min_sq)
+
+static func _infer_adjacency_from_polys(rooms: Array, edge_min: float = 12.0, gap_tol: float = 6.0) -> Array:
+    var pairs: Array = []
+    for i in rooms.size():
+        var pi: PackedVector2Array = rooms[i].get("poly", PackedVector2Array())
+        if pi.size() < 3:
+            continue
+        for j in range(i + 1, rooms.size()):
+            var pj: PackedVector2Array = rooms[j].get("poly", PackedVector2Array())
+            if pj.size() < 3:
+                continue
+            var bb_i := _poly_aabb(pi).grow(gap_tol)
+            var bb_j := _poly_aabb(pj).grow(gap_tol)
+            if not bb_i.intersects(bb_j):
+                continue
+            var shared := _shared_edge_length(pi, pj, gap_tol)
+            if shared >= edge_min or _min_gap(pi, pj) <= gap_tol:
+                pairs.append(Vector2i(i, j))
+    return pairs
+
+static func _program_from_resplan(id: String, plan_dict: Dictionary) -> Dictionary:
+    var rooms_raw := plan_dict.get("rooms", [])
+    if rooms_raw is not Array or (rooms_raw as Array).is_empty():
+        return {}
+
+    var rooms: Array = []
+    for entry in rooms_raw:
+        if typeof(entry) != TYPE_DICTIONARY:
+            continue
+        var entry_dict: Dictionary = entry
+        var points_raw := entry_dict.get("polygon", [])
+        if points_raw is not Array:
+            continue
+        var poly := PackedVector2Array()
+        for point in points_raw:
+            if point is Array and point.size() >= 2:
+                poly.push_back(Vector2(float(point[0]), float(point[1])))
+        if poly.size() < 3:
+            continue
+        var label := _norm_label(String(entry_dict.get("label", "Room")))
+        if RESPLAN_EXCLUDE_TYPES.has(label):
+            continue
+        rooms.append({
+            "type": label,
+            "poly": poly,
+            "area": _poly_area(poly),
+            "aspect": _poly_aspect(poly),
+        })
+    if rooms.is_empty():
+        return {}
+
+    var bbox := _poly_aabb(rooms[0]["poly"])
+    var total_area := float(rooms[0]["area"])
+    for idx in range(1, rooms.size()):
+        bbox = bbox.merge(_poly_aabb(rooms[idx]["poly"]))
+        total_area += float(rooms[idx]["area"])
+
+    var adj_pairs := _infer_adjacency_from_polys(rooms)
+    var program := {
+        "id": id,
+        "total_m2": total_area,
+        "footprint_w": bbox.size.x,
+        "footprint_d": bbox.size.y,
+        "footprint": Vector2(bbox.size.x, bbox.size.y),
+        "rooms": [],
+        "adj_pairs": [],
+        "adjacencies": [],
+        "adj_summary": {},
+    }
+    for i in range(rooms.size()):
+        var room_data: Dictionary = rooms[i]
+        program["rooms"].append({
+            "id": "room_%d" % i,
+            "type": room_data.get("type", "Room"),
+            "area": room_data.get("area", 0.0),
+            "aspect": room_data.get("aspect", 1.0),
+            "poly": room_data.get("poly", PackedVector2Array()),
+        })
+    var room_counts := {}
+    for room_dict in program["rooms"]:
+        var r_type := String(room_dict.get("type", "Room"))
+        room_counts[r_type] = int(room_counts.get(r_type, 0)) + 1
+    program["room_counts"] = room_counts
+    var room_exists := {}
+    for t in room_counts.keys():
+        room_exists["%s_exists" % t] = 1
+    program["room_exists"] = room_exists
+    program["bedrooms"] = int(room_counts.get("Bedroom", 0))
+    program["bathrooms"] = int(room_counts.get("Bathroom", 0))
+
+    var adjacency_records: Array = []
+    var adj_list: Array = []
+    var adj_summary := {}
+    for pair in adj_pairs:
+        var a_idx := int(pair.x)
+        var b_idx := int(pair.y)
+        if a_idx < 0 or b_idx < 0 or a_idx >= program["rooms"].size() or b_idx >= program["rooms"].size():
+            continue
+        var room_a: Dictionary = program["rooms"][a_idx]
+        var room_b: Dictionary = program["rooms"][b_idx]
+        var a_type := String(room_a.get("type", ""))
+        var b_type := String(room_b.get("type", ""))
+        if a_type == "" or b_type == "":
+            continue
+        var label := _adj_key(a_type, b_type)
+        var a_id := String(room_a.get("id", "room_%d" % a_idx))
+        var b_id := String(room_b.get("id", "room_%d" % b_idx))
+        adjacency_records.append({"a": a_id, "b": b_id, "type": "door"})
+        adj_list.append({"pair": label, "a_id": a_id, "b_id": b_id, "exist": true})
+        adj_summary[label] = {"exist": true}
+    program["adjacencies"] = adjacency_records
+    program["adj_pairs"] = adj_list
+    program["adj_summary"] = adj_summary
+    return program
+
+static func _scan_resplan_dir(dir_path: String) -> Array:
+    var result: Array = []
+    var stack: Array[String] = [dir_path]
+    while not stack.is_empty():
+        var current := stack.pop_back()
+        var dir := DirAccess.open(current)
+        if dir == null:
+            continue
+        dir.list_dir_begin()
+        while true:
+            var name := dir.get_next()
+            if name == "":
+                break
+            if name.begins_with("."):
+                continue
+            if dir.current_is_dir():
+                stack.append(current.path_join(name))
+                continue
+            if not name.to_lower().ends_with(".json"):
+                continue
+            if name == "plans_manifest.jsonl":
+                continue
+            var path: String = current.path_join(name)
+            var file := FileAccess.open(path, FileAccess.READ)
+            if file == null:
+                continue
+            var parsed := JSON.parse_string(file.get_as_text())
+            file.close()
+            if typeof(parsed) != TYPE_DICTIONARY:
+                continue
+            var program := _program_from_resplan(path.get_file().get_basename(), parsed)
+            if not program.is_empty():
+                result.append(program)
+        dir.list_dir_end()
+    return result
+
+static func _load_resplan_as_programs_impl(dir_path: String) -> Array:
+    var manifest_path := dir_path.path_join("plans_manifest.jsonl")
+    if FileAccess.file_exists(manifest_path):
+        var result: Array = []
+        var manifest := FileAccess.open(manifest_path, FileAccess.READ)
+        if manifest == null:
+            push_warning("Unable to open ResPlan manifest: %s" % manifest_path)
+        else:
+            while not manifest.eof_reached():
+                var line := manifest.get_line().strip_edges()
+                if line.is_empty():
+                    continue
+                var parsed := JSON.parse_string(line)
+                if typeof(parsed) != TYPE_DICTIONARY:
+                    continue
+                var meta: Dictionary = parsed
+                var json_rel := String(meta.get("json", meta.get("file", "")))
+                if json_rel.is_empty():
+                    continue
+                json_rel = json_rel.replace("\\", "/")
+                var plan_path := dir_path.path_join(json_rel)
+                if not FileAccess.file_exists(plan_path):
+                    continue
+                var file := FileAccess.open(plan_path, FileAccess.READ)
+                if file == null:
+                    continue
+                var plan_data := JSON.parse_string(file.get_as_text())
+                file.close()
+                if typeof(plan_data) != TYPE_DICTIONARY:
+                    continue
+                var program := _program_from_resplan(String(meta.get("id", "")), plan_data)
+                if not program.is_empty():
+                    result.append(program)
+            manifest.close()
+        if DEBUG_VERIFY:
+            print("[RESPLAN] loaded=%d" % result.size())
+        return result
+
+    push_warning("ResPlan manifest not found: %s" % manifest_path)
+    var scanned := _scan_resplan_dir(dir_path)
+    if DEBUG_VERIFY:
+        print("[RESPLAN] manifest missing, scanned %d programs" % scanned.size())
+    return scanned
+
+static func load_resplan_as_programs(dir_path: String = RESPLAN_DIR) -> Array:
+    var programs := _load_resplan_as_programs_impl(dir_path)
+    if DEBUG_VERIFY:
+        print("[RESPLAN] loaded=%d" % programs.size())
+    return programs
+
+static func _adj_key(a: String, b: String) -> String:
+    var a_low := a
+    var b_low := b
+    if a_low > b_low:
+        var tmp := a_low
+        a_low = b_low
+        b_low = tmp
+    return "%s|%s" % [a_low, b_low]
+
 ## Represents a single training example for the Bayesian network
 class ProgramInstance:
-	var total_sqft: float
-	var footprint: Vector2i
-	var floors: int
-	var bedrooms: int
-	var bathrooms: int
-	var rooms: Array[Dictionary] = []  # {type:String, area:float, aspect:float, floor:int}
-	var adjacencies: Array[Dictionary] = []  # {a:String, b:String, type:String}
+    extends RefCounted
 
-## Collection of training instances
-var single_story: Array = []
-var two_story: Array = []
-var three_story: Array = []
+    var total_m2: float = 0.0
+    var footprint: Vector2i = Vector2i.ZERO
+    var floors: int = 1
+    var bedrooms: int = 0
+    var bathrooms: int = 0
+    var rooms: Array[Dictionary] = []
+    var adjacencies: Array[Dictionary] = []
 
-## Create dataset based on real-world architectural programs
-## Data inspired by "Essential House Plan Collection" by Home Planners (cited in paper)
+    var total_sqft_bin: int = -1
+    var total_m2_bin: int = -1
+    var footprint_w_bin: int = -1
+    var footprint_d_bin: int = -1
+    var footprint_bin: int = -1
+    var room_counts: Dictionary = {}
+    var room_exists: Dictionary = {}
+    var room_count_bins: Dictionary = {}
+    var adj_pairs: Array[Dictionary] = []
+    var adj_summary: Dictionary = {}
+
+var single_story: Array[ProgramInstance] = []
+var two_story: Array[ProgramInstance] = []
+var three_story: Array[ProgramInstance] = []
+
 static func create_default() -> TrainingData:
-	var data := TrainingData.new()
-	
-	# ========================================
-	# SINGLE-STORY PROGRAMS (40 INSTANCE
-	# ========================================
-	
-	# Small cottage (900-1200 sqft)
-	for i in range(10):
-		var prog := ProgramInstance.new()
-		prog.floors = 1
-		prog.bedrooms = 2
-		prog.bathrooms = 1
-		prog.total_sqft = randf_range(90, 120)
-		prog.footprint = Vector2i(randi_range(10, 14), randi_range(8, 12))
-		
-		prog.rooms = [
-			{"type": "Entry", "area": randf_range(4, 6), "aspect": randf_range(1.0, 1.3), "floor": 0},
-			{"type": "Living", "area": randf_range(18, 25), "aspect": randf_range(1.3, 1.7), "floor": 0},
-			{"type": "Kitchen", "area": randf_range(10, 14), "aspect": randf_range(1.0, 1.3), "floor": 0},
-			{"type": "Bedroom", "area": randf_range(10, 13), "aspect": randf_range(1.2, 1.5), "floor": 0},
-			{"type": "Bedroom", "area": randf_range(9, 12), "aspect": randf_range(1.2, 1.5), "floor": 0},
-			{"type": "Bathroom", "area": randf_range(4, 6), "aspect": randf_range(1.0, 1.4), "floor": 0},
-		]
-		
-		prog.adjacencies = [
-			{"a": "Entry", "b": "Living", "type": "door"},
-			{"a": "Living", "b": "Kitchen", "type": "open"},
-			{"a": "Living", "b": "Bedroom", "type": "door"},
-			{"a": "Kitchen", "b": "Bathroom", "type": "door"},
-		]
-		
-		data.single_story.append(prog)
-	
-	# Medium ranch (1200-1600 sqft)
-	for i in range(15):
-		var prog := ProgramInstance.new()
-		prog.floors = 1
-		prog.bedrooms = 3
-		prog.bathrooms = 2
-		prog.total_sqft = randf_range(120, 160)
-		prog.footprint = Vector2i(randi_range(14, 18), randi_range(10, 14))
-		
-		prog.rooms = [
-			{"type": "Entry", "area": randf_range(5, 8), "aspect": randf_range(1.0, 1.4), "floor": 0},
-			{"type": "Living", "area": randf_range(22, 30), "aspect": randf_range(1.4, 1.8), "floor": 0},
-			{"type": "Dining", "area": randf_range(10, 14), "aspect": randf_range(1.1, 1.5), "floor": 0},
-			{"type": "Kitchen", "area": randf_range(12, 16), "aspect": randf_range(1.0, 1.3), "floor": 0},
-			{"type": "Bedroom", "area": randf_range(11, 14), "aspect": randf_range(1.2, 1.6), "floor": 0},
-			{"type": "Bedroom", "area": randf_range(10, 13), "aspect": randf_range(1.2, 1.5), "floor": 0},
-			{"type": "Bedroom", "area": randf_range(9, 12), "aspect": randf_range(1.2, 1.5), "floor": 0},
-			{"type": "Bathroom", "area": randf_range(5, 7), "aspect": randf_range(1.0, 1.4), "floor": 0},
-			{"type": "Bathroom", "area": randf_range(4, 6), "aspect": randf_range(1.0, 1.3), "floor": 0},
-		]
-		
-		prog.adjacencies = [
-			{"a": "Entry", "b": "Living", "type": "door"},
-			{"a": "Living", "b": "Dining", "type": "open"},
-			{"a": "Dining", "b": "Kitchen", "type": "open"},
-			{"a": "Living", "b": "Bedroom", "type": "door"},
-			{"a": "Bedroom", "b": "Bathroom", "type": "door"},
-			{"a": "Kitchen", "b": "Bathroom", "type": "door"},
-		]
-		
-		data.single_story.append(prog)
-	
-	# Large bungalow (1600-2200 sqft)
-	for i in range(15):
-		var prog := ProgramInstance.new()
-		prog.floors = 1
-		prog.bedrooms = 4
-		prog.bathrooms = 3
-		prog.total_sqft = randf_range(160, 220)
-		prog.footprint = Vector2i(randi_range(16, 22), randi_range(12, 18))
-		
-		prog.rooms = [
-			{"type": "Entry", "area": randf_range(6, 10), "aspect": randf_range(1.0, 1.5), "floor": 0},
-			{"type": "Living", "area": randf_range(28, 38), "aspect": randf_range(1.4, 1.9), "floor": 0},
-			{"type": "Dining", "area": randf_range(12, 18), "aspect": randf_range(1.2, 1.6), "floor": 0},
-			{"type": "Kitchen", "area": randf_range(14, 20), "aspect": randf_range(1.0, 1.4), "floor": 0},
-			{"type": "Bedroom", "area": randf_range(13, 17), "aspect": randf_range(1.3, 1.7), "floor": 0},
-			{"type": "Bedroom", "area": randf_range(11, 15), "aspect": randf_range(1.2, 1.6), "floor": 0},
-			{"type": "Bedroom", "area": randf_range(10, 14), "aspect": randf_range(1.2, 1.5), "floor": 0},
-			{"type": "Bedroom", "area": randf_range(9, 13), "aspect": randf_range(1.2, 1.5), "floor": 0},
-			{"type": "Bathroom", "area": randf_range(6, 9), "aspect": randf_range(1.1, 1.5), "floor": 0},
-			{"type": "Bathroom", "area": randf_range(5, 7), "aspect": randf_range(1.0, 1.4), "floor": 0},
-			{"type": "Bathroom", "area": randf_range(4, 6), "aspect": randf_range(1.0, 1.3), "floor": 0},
-			{"type": "Laundry", "area": randf_range(4, 7), "aspect": randf_range(1.0, 1.5), "floor": 0},
-		]
-		
-		prog.adjacencies = [
-			{"a": "Entry", "b": "Living", "type": "door"},
-			{"a": "Living", "b": "Dining", "type": "open"},
-			{"a": "Dining", "b": "Kitchen", "type": "open"},
-			{"a": "Living", "b": "Bedroom", "type": "door"},
-			{"a": "Bedroom", "b": "Bathroom", "type": "door"},
-			{"a": "Kitchen", "b": "Laundry", "type": "door"},
-			{"a": "Laundry", "b": "Bathroom", "type": "door"},
-		]
-		
-		data.single_story.append(prog)
-	
-	# ========================================
-	# TWO-STORY PROGRAMS (50 instances)
-	# ========================================
-	
-	# Compact two-story (1400-1800 sqft)
-	for i in range(15):
-		var prog := ProgramInstance.new()
-		prog.floors = 2
-		prog.bedrooms = 3
-		prog.bathrooms = 2
-		prog.total_sqft = randf_range(140, 180)
-		prog.footprint = Vector2i(randi_range(12, 16), randi_range(10, 14))
-		
-		prog.rooms = [
-			{"type": "Entry", "area": randf_range(5, 8), "aspect": randf_range(1.0, 1.4), "floor": 0},
-			{"type": "Living", "area": randf_range(24, 32), "aspect": randf_range(1.4, 1.8), "floor": 0},
-			{"type": "Dining", "area": randf_range(10, 14), "aspect": randf_range(1.1, 1.5), "floor": 0},
-			{"type": "Kitchen", "area": randf_range(12, 16), "aspect": randf_range(1.0, 1.3), "floor": 0},
-			{"type": "Bathroom", "area": randf_range(4, 6), "aspect": randf_range(1.0, 1.3), "floor": 0},
-			{"type": "Stair", "area": randf_range(6, 10), "aspect": randf_range(1.5, 2.5), "floor": 0},
-			{"type": "Hall", "area": randf_range(8, 12), "aspect": randf_range(2.0, 4.0), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(12, 16), "aspect": randf_range(1.3, 1.7), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(10, 14), "aspect": randf_range(1.2, 1.6), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(9, 13), "aspect": randf_range(1.2, 1.5), "floor": 1},
-			{"type": "Bathroom", "area": randf_range(5, 8), "aspect": randf_range(1.1, 1.4), "floor": 1},
-			{"type": "Stair", "area": randf_range(6, 10), "aspect": randf_range(1.5, 2.5), "floor": 1},
-		]
-		
-		prog.adjacencies = [
-			{"a": "Entry", "b": "Living", "type": "door"},
-			{"a": "Living", "b": "Dining", "type": "open"},
-			{"a": "Dining", "b": "Kitchen", "type": "open"},
-			{"a": "Entry", "b": "Stair", "type": "door"},
-			{"a": "Hall", "b": "Bedroom", "type": "door"},
-			{"a": "Hall", "b": "Bathroom", "type": "door"},
-			{"a": "Hall", "b": "Stair", "type": "door"},
-		]
-		
-		data.two_story.append(prog)
-	
-	# Standard two-story (1800-2400 sqft)
-	for i in range(20):
-		var prog := ProgramInstance.new()
-		prog.floors = 2
-		prog.bedrooms = 4
-		prog.bathrooms = 3
-		prog.total_sqft = randf_range(180, 240)
-		prog.footprint = Vector2i(randi_range(14, 18), randi_range(12, 16))
-		
-		prog.rooms = [
-			{"type": "Entry", "area": randf_range(6, 10), "aspect": randf_range(1.0, 1.5), "floor": 0},
-			{"type": "Living", "area": randf_range(28, 38), "aspect": randf_range(1.5, 2.0), "floor": 0},
-			{"type": "Dining", "area": randf_range(12, 18), "aspect": randf_range(1.2, 1.6), "floor": 0},
-			{"type": "Kitchen", "area": randf_range(14, 20), "aspect": randf_range(1.0, 1.4), "floor": 0},
-			{"type": "Bathroom", "area": randf_range(4, 6), "aspect": randf_range(1.0, 1.3), "floor": 0},
-			{"type": "Laundry", "area": randf_range(4, 7), "aspect": randf_range(1.0, 1.5), "floor": 0},
-			{"type": "Stair", "area": randf_range(7, 11), "aspect": randf_range(1.5, 2.5), "floor": 0},
-			{"type": "Hall", "area": randf_range(10, 15), "aspect": randf_range(2.0, 4.0), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(14, 19), "aspect": randf_range(1.3, 1.7), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(11, 15), "aspect": randf_range(1.2, 1.6), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(10, 14), "aspect": randf_range(1.2, 1.5), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(9, 13), "aspect": randf_range(1.2, 1.5), "floor": 1},
-			{"type": "Bathroom", "area": randf_range(6, 9), "aspect": randf_range(1.1, 1.5), "floor": 1},
-			{"type": "Bathroom", "area": randf_range(5, 7), "aspect": randf_range(1.0, 1.4), "floor": 1},
-			{"type": "Stair", "area": randf_range(7, 11), "aspect": randf_range(1.5, 2.5), "floor": 1},
-		]
-		
-		prog.adjacencies = [
-			{"a": "Entry", "b": "Living", "type": "door"},
-			{"a": "Living", "b": "Dining", "type": "open"},
-			{"a": "Dining", "b": "Kitchen", "type": "open"},
-			{"a": "Entry", "b": "Stair", "type": "door"},
-			{"a": "Kitchen", "b": "Laundry", "type": "door"},
-			{"a": "Hall", "b": "Bedroom", "type": "door"},
-			{"a": "Hall", "b": "Bathroom", "type": "door"},
-			{"a": "Hall", "b": "Stair", "type": "door"},
-			{"a": "Bedroom", "b": "Bathroom", "type": "door"},
-		]
-		
-		data.two_story.append(prog)
-	
-	# Large two-story (2400-3200 sqft)
-	for i in range(15):
-		var prog := ProgramInstance.new()
-		prog.floors = 2
-		prog.bedrooms = 5
-		prog.bathrooms = 4
-		prog.total_sqft = randf_range(240, 320)
-		prog.footprint = Vector2i(randi_range(16, 22), randi_range(14, 18))
-		
-		prog.rooms = [
-			{"type": "Entry", "area": randf_range(8, 12), "aspect": randf_range(1.0, 1.6), "floor": 0},
-			{"type": "Living", "area": randf_range(32, 45), "aspect": randf_range(1.5, 2.1), "floor": 0},
-			{"type": "Dining", "area": randf_range(14, 20), "aspect": randf_range(1.2, 1.7), "floor": 0},
-			{"type": "Kitchen", "area": randf_range(16, 24), "aspect": randf_range(1.1, 1.5), "floor": 0},
-			{"type": "Study", "area": randf_range(10, 15), "aspect": randf_range(1.2, 1.6), "floor": 0},
-			{"type": "Bathroom", "area": randf_range(5, 7), "aspect": randf_range(1.0, 1.4), "floor": 0},
-			{"type": "Laundry", "area": randf_range(5, 8), "aspect": randf_range(1.0, 1.5), "floor": 0},
-			{"type": "Stair", "area": randf_range(8, 13), "aspect": randf_range(1.5, 2.5), "floor": 0},
-			{"type": "Hall", "area": randf_range(12, 18), "aspect": randf_range(2.0, 4.5), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(16, 22), "aspect": randf_range(1.3, 1.8), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(13, 17), "aspect": randf_range(1.2, 1.6), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(11, 15), "aspect": randf_range(1.2, 1.6), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(10, 14), "aspect": randf_range(1.2, 1.5), "floor": 1},
-			{"type": "Bathroom", "area": randf_range(7, 10), "aspect": randf_range(1.1, 1.5), "floor": 1},
-			{"type": "Bathroom", "area": randf_range(6, 8), "aspect": randf_range(1.0, 1.4), "floor": 1},
-			{"type": "Bathroom", "area": randf_range(5, 7), "aspect": randf_range(1.0, 1.3), "floor": 1},
-			{"type": "Stair", "area": randf_range(8, 13), "aspect": randf_range(1.5, 2.5), "floor": 1},
-		]
-		
-		prog.adjacencies = [
-			{"a": "Entry", "b": "Living", "type": "door"},
-			{"a": "Living", "b": "Dining", "type": "open"},
-			{"a": "Dining", "b": "Kitchen", "type": "open"},
-			{"a": "Entry", "b": "Stair", "type": "door"},
-			{"a": "Kitchen", "b": "Laundry", "type": "door"},
-			{"a": "Hall", "b": "Bedroom", "type": "door"},
-			{"a": "Hall", "b": "Bathroom", "type": "door"},
-			{"a": "Hall", "b": "Stair", "type": "door"},
-			{"a": "Bedroom", "b": "Bathroom", "type": "door"},
-		]
-		
-		data.two_story.append(prog)
-	
-	# ========================================
-	# THREE-STORY PROGRAMS (30 instances)
-	# ========================================
-	
-	# Hillside three-story (2200-2800 sqft)
-	for i in range(15):
-		var prog := ProgramInstance.new()
-		prog.floors = 3
-		prog.bedrooms = 4
-		prog.bathrooms = 3
-		prog.total_sqft = randf_range(220, 280)
-		prog.footprint = Vector2i(randi_range(14, 18), randi_range(12, 16))
-		
-		prog.rooms = [
-			# Ground floor (entry level)
-			{"type": "Entry", "area": randf_range(6, 10), "aspect": randf_range(1.0, 1.5), "floor": 0},
-			{"type": "Living", "area": randf_range(28, 38), "aspect": randf_range(1.5, 2.0), "floor": 0},
-			{"type": "Dining", "area": randf_range(12, 18), "aspect": randf_range(1.2, 1.6), "floor": 0},
-			{"type": "Kitchen", "area": randf_range(14, 20), "aspect": randf_range(1.0, 1.4), "floor": 0},
-			{"type": "Bathroom", "area": randf_range(4, 6), "aspect": randf_range(1.0, 1.3), "floor": 0},
-			{"type": "Stair", "area": randf_range(7, 11), "aspect": randf_range(1.5, 2.5), "floor": 0},
-			# Upper floor (bedrooms)
-			{"type": "Hall", "area": randf_range(10, 15), "aspect": randf_range(2.0, 4.0), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(14, 19), "aspect": randf_range(1.3, 1.7), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(11, 15), "aspect": randf_range(1.2, 1.6), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(10, 14), "aspect": randf_range(1.2, 1.5), "floor": 1},
-			{"type": "Bathroom", "area": randf_range(6, 9), "aspect": randf_range(1.1, 1.5), "floor": 1},
-			{"type": "Bathroom", "area": randf_range(5, 7), "aspect": randf_range(1.0, 1.4), "floor": 1},
-			{"type": "Stair", "area": randf_range(7, 11), "aspect": randf_range(1.5, 2.5), "floor": 1},
-			# Lower floor (walkout basement)
-			{"type": "Entry", "area": randf_range(5, 8), "aspect": randf_range(1.0, 1.4), "floor": -1},
-			{"type": "Bedroom", "area": randf_range(12, 16), "aspect": randf_range(1.2, 1.6), "floor": -1},
-			{"type": "Bathroom", "area": randf_range(5, 7), "aspect": randf_range(1.0, 1.4), "floor": -1},
-			{"type": "Utility", "area": randf_range(8, 12), "aspect": randf_range(1.0, 1.5), "floor": -1},
-			{"type": "Stair", "area": randf_range(7, 11), "aspect": randf_range(1.5, 2.5), "floor": -1},
-		]
-		
-		prog.adjacencies = [
-			{"a": "Entry", "b": "Living", "type": "door"},
-			{"a": "Living", "b": "Dining", "type": "open"},
-			{"a": "Dining", "b": "Kitchen", "type": "open"},
-			{"a": "Entry", "b": "Stair", "type": "door"},
-			{"a": "Hall", "b": "Bedroom", "type": "door"},
-			{"a": "Hall", "b": "Bathroom", "type": "door"},
-			{"a": "Hall", "b": "Stair", "type": "door"},
-		]
-		
-		data.three_story.append(prog)
-	
-	# Large three-story (2800-3800 sqft)
-	for i in range(15):
-		var prog := ProgramInstance.new()
-		prog.floors = 3
-		prog.bedrooms = 6
-		prog.bathrooms = 5
-		prog.total_sqft = randf_range(280, 380)
-		prog.footprint = Vector2i(randi_range(16, 22), randi_range(14, 20))
-		
-		prog.rooms = [
-			# Ground floor
-			{"type": "Entry", "area": randf_range(8, 12), "aspect": randf_range(1.0, 1.6), "floor": 0},
-			{"type": "Living", "area": randf_range(35, 48), "aspect": randf_range(1.5, 2.2), "floor": 0},
-			{"type": "Dining", "area": randf_range(16, 22), "aspect": randf_range(1.2, 1.7), "floor": 0},
-			{"type": "Kitchen", "area": randf_range(18, 26), "aspect": randf_range(1.1, 1.5), "floor": 0},
-			{"type": "Study", "area": randf_range(12, 17), "aspect": randf_range(1.2, 1.6), "floor": 0},
-			{"type": "Bathroom", "area": randf_range(5, 7), "aspect": randf_range(1.0, 1.4), "floor": 0},
-			{"type": "Laundry", "area": randf_range(5, 8), "aspect": randf_range(1.0, 1.5), "floor": 0},
-			{"type": "Stair", "area": randf_range(9, 14), "aspect": randf_range(1.5, 2.5), "floor": 0},
-			# Upper floor
-			{"type": "Hall", "area": randf_range(14, 20), "aspect": randf_range(2.0, 4.5), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(18, 24), "aspect": randf_range(1.3, 1.8), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(14, 18), "aspect": randf_range(1.2, 1.6), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(12, 16), "aspect": randf_range(1.2, 1.6), "floor": 1},
-			{"type": "Bedroom", "area": randf_range(11, 15), "aspect": randf_range(1.2, 1.5), "floor": 1},
-			{"type": "Bathroom", "area": randf_range(8, 11), "aspect": randf_range(1.1, 1.5), "floor": 1},
-			{"type": "Bathroom", "area": randf_range(6, 9), "aspect": randf_range(1.0, 1.4), "floor": 1},
-			{"type": "Stair", "area": randf_range(9, 14), "aspect": randf_range(1.5, 2.5), "floor": 1},
-			# Lower floor
-			{"type": "Entry", "area": randf_range(6, 10), "aspect": randf_range(1.0, 1.5), "floor": -1},
-			{"type": "Bedroom", "area": randf_range(14, 18), "aspect": randf_range(1.2, 1.6), "floor": -1},
-			{"type": "Bedroom", "area": randf_range(12, 16), "aspect": randf_range(1.2, 1.6), "floor": -1},
-			{"type": "Bathroom", "area": randf_range(6, 8), "aspect": randf_range(1.0, 1.4), "floor": -1},
-			{"type": "Bathroom", "area": randf_range(5, 7), "aspect": randf_range(1.0, 1.3), "floor": -1},
-			{"type": "Utility", "area": randf_range(10, 15), "aspect": randf_range(1.0, 1.6), "floor": -1},
-			{"type": "Stair", "area": randf_range(9, 14), "aspect": randf_range(1.5, 2.5), "floor": -1},
-		]
-		
-		prog.adjacencies = [
-			{"a": "Entry", "b": "Living", "type": "door"},
-			{"a": "Living", "b": "Dining", "type": "open"},
-			{"a": "Dining", "b": "Kitchen", "type": "open"},
-			{"a": "Entry", "b": "Stair", "type": "door"},
-			{"a": "Kitchen", "b": "Laundry", "type": "door"},
-			{"a": "Hall", "b": "Bedroom", "type": "door"},
-			{"a": "Hall", "b": "Bathroom", "type": "door"},
-			{"a": "Hall", "b": "Stair", "type": "door"},
-			{"a": "Bedroom", "b": "Bathroom", "type": "door"},
-		]
-		
-		data.three_story.append(prog)
-	
-	# ========================================
-	# REAL-WORLD FLOOR PLAN: Plan #142-1221
-	# Source: Architectural Designs
-	# ========================================
+    var data := TrainingData.new()
 
-	var prog_142_1221 := ProgramInstance.new()
-	prog_142_1221.total_sqft = 120.0
-	prog_142_1221.footprint = Vector2i(9, 18)
-	prog_142_1221.floors = 1
-	prog_142_1221.bedrooms = 3
-	prog_142_1221.bathrooms = 2
+    data.single_story.append(_make_program({
+        "floors": 1,
+        "bedrooms": 3,
+        "bathrooms": 2,
+        "total_m2": 140.0,
+        "footprint": Vector2i(14, 10),
+        "rooms": [
+            {"type": "Entry", "area": 6.0, "aspect": 1.2, "floor": 0},
+            {"type": "Living", "area": 32.0, "aspect": 1.5, "floor": 0},
+            {"type": "Kitchen", "area": 14.0, "aspect": 1.2, "floor": 0},
+            {"type": "Dining", "area": 12.0, "aspect": 1.4, "floor": 0},
+            {"type": "Bedroom", "area": 13.0, "aspect": 1.3, "floor": 0},
+            {"type": "Bedroom", "area": 11.5, "aspect": 1.2, "floor": 0},
+            {"type": "Bedroom", "area": 11.0, "aspect": 1.3, "floor": 0},
+            {"type": "Bathroom", "area": 5.5, "aspect": 1.2, "floor": 0},
+            {"type": "Bathroom", "area": 4.5, "aspect": 1.1, "floor": 0},
+            {"type": "Laundry", "area": 4.0, "aspect": 1.1, "floor": 0},
+            {"type": "Hall", "area": 10.0, "aspect": 2.2, "floor": 0},
+        ],
+        "adjacencies": [
+            {"a": "Entry", "b": "Living", "type": "door"},
+            {"a": "Living", "b": "Dining", "type": "open"},
+            {"a": "Dining", "b": "Kitchen", "type": "open"},
+            {"a": "Living", "b": "Hall", "type": "door"},
+            {"a": "Hall", "b": "Bedroom", "type": "door"},
+            {"a": "Hall", "b": "Bathroom", "type": "door"},
+            {"a": "Kitchen", "b": "Laundry", "type": "door"},
+        ]
+    }))
 
-	prog_142_1221.rooms = [
-		{"type": "Entry", "area": 3.15, "aspect": 1.12, "floor": 0},
-		{"type": "Living", "area": 21.95, "aspect": 1.18, "floor": 0},
-		{"type": "Kitchen", "area": 14.49, "aspect": 1.35, "floor": 0},
-		{"type": "Bedroom", "area": 15.23, "aspect": 1.14, "floor": 0},
-		{"type": "Bedroom", "area": 11.24, "aspect": 1.0, "floor": 0},
-		{"type": "Bedroom", "area": 11.24, "aspect": 1.0, "floor": 0},
-		{"type": "Bathroom", "area": 8.55, "aspect": 1.44, "floor": 0},
-		{"type": "Bathroom", "area": 5.57, "aspect": 2.4, "floor": 0},
-		{"type": "Hall", "area": 5.57, "aspect": 6.67, "floor": 0},
-		{"type": "Laundry", "area": 1.53, "aspect": 1.83, "floor": 0},
-		{"type": "Pantry", "area": 2.17, "aspect": 1.15, "floor": 0},
-		{"type": "Closet", "area": 4.55, "aspect": 1.36, "floor": 0},
-	]
+    data.single_story.append(_make_program({
+        "floors": 1,
+        "bedrooms": 2,
+        "bathrooms": 2,
+        "total_m2": 115.0,
+        "footprint": Vector2i(12, 9),
+        "rooms": [
+            {"type": "Entry", "area": 5.0, "aspect": 1.1, "floor": 0},
+            {"type": "Living", "area": 28.0, "aspect": 1.4, "floor": 0},
+            {"type": "Kitchen", "area": 13.5, "aspect": 1.3, "floor": 0},
+            {"type": "Bedroom", "area": 12.5, "aspect": 1.2, "floor": 0},
+            {"type": "Bedroom", "area": 11.0, "aspect": 1.2, "floor": 0},
+            {"type": "Bathroom", "area": 5.0, "aspect": 1.1, "floor": 0},
+            {"type": "Bathroom", "area": 4.0, "aspect": 1.0, "floor": 0},
+            {"type": "Hall", "area": 8.0, "aspect": 2.0, "floor": 0},
+            {"type": "Patio", "area": 10.0, "aspect": 1.6, "floor": 0},
+        ],
+        "adjacencies": [
+            {"a": "Entry", "b": "Living", "type": "door"},
+            {"a": "Living", "b": "Kitchen", "type": "open"},
+            {"a": "Living", "b": "Hall", "type": "door"},
+            {"a": "Hall", "b": "Bedroom", "type": "door"},
+            {"a": "Hall", "b": "Bathroom", "type": "door"},
+            {"a": "Living", "b": "Patio", "type": "open"},
+        ]
+    }))
 
-	prog_142_1221.adjacencies = [
-		{"a": "Entry", "b": "Living", "type": "open"},
-		{"a": "Living", "b": "Kitchen", "type": "open"},
-		{"a": "Kitchen", "b": "Pantry", "type": "door"},
-		{"a": "Kitchen", "b": "Hall", "type": "open"},
-		{"a": "Hall", "b": "Bedroom", "type": "door"},
-		{"a": "Hall", "b": "Bedroom", "type": "door"},
-		{"a": "Hall", "b": "Bedroom", "type": "door"},
-		{"a": "Hall", "b": "Bathroom", "type": "door"},
-		{"a": "Hall", "b": "Laundry", "type": "door"},
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"},
-		{"a": "Bedroom", "b": "Closet", "type": "door"},
-	]
+    data.two_story.append(_make_program({
+        "floors": 2,
+        "bedrooms": 4,
+        "bathrooms": 3,
+        "total_m2": 195.0,
+        "footprint": Vector2i(12, 12),
+        "rooms": [
+            {"type": "Entry", "area": 6.0, "aspect": 1.1, "floor": 0},
+            {"type": "Living", "area": 34.0, "aspect": 1.5, "floor": 0},
+            {"type": "Kitchen", "area": 15.0, "aspect": 1.2, "floor": 0},
+            {"type": "Dining", "area": 13.0, "aspect": 1.4, "floor": 0},
+            {"type": "Bathroom", "area": 4.5, "aspect": 1.2, "floor": 0},
+            {"type": "Stair", "area": 7.5, "aspect": 2.0, "floor": 0},
+            {"type": "Garage", "area": 36.0, "aspect": 1.3, "floor": 0},
+            {"type": "Hall", "area": 12.0, "aspect": 2.4, "floor": 1},
+            {"type": "Bedroom", "area": 15.0, "aspect": 1.3, "floor": 1},
+            {"type": "Bedroom", "area": 14.0, "aspect": 1.2, "floor": 1},
+            {"type": "Bedroom", "area": 13.0, "aspect": 1.2, "floor": 1},
+            {"type": "Bedroom", "area": 12.0, "aspect": 1.2, "floor": 1},
+            {"type": "Bathroom", "area": 5.5, "aspect": 1.3, "floor": 1},
+            {"type": "Bathroom", "area": 4.8, "aspect": 1.2, "floor": 1},
+            {"type": "Laundry", "area": 5.0, "aspect": 1.1, "floor": 1},
+        ],
+        "adjacencies": [
+            {"a": "Entry", "b": "Living", "type": "door"},
+            {"a": "Living", "b": "Dining", "type": "open"},
+            {"a": "Dining", "b": "Kitchen", "type": "open"},
+            {"a": "Kitchen", "b": "Garage", "type": "door"},
+            {"a": "Living", "b": "Stair", "type": "door"},
+            {"a": "Stair", "b": "Hall", "type": "open"},
+            {"a": "Hall", "b": "Bedroom", "type": "door"},
+            {"a": "Hall", "b": "Bathroom", "type": "door"},
+        ]
+    }))
 
-	data.single_story.append(prog_142_1221)
-	
-	# ========================================
-	# PLAN #2: Modern Farmhouse Ranch
-	# ========================================
+    data.three_story.append(_make_program({
+        "floors": 3,
+        "bedrooms": 5,
+        "bathrooms": 4,
+        "total_m2": 260.0,
+        "footprint": Vector2i(13, 14),
+        "rooms": [
+            {"type": "Entry", "area": 7.0, "aspect": 1.2, "floor": 0},
+            {"type": "Living", "area": 36.0, "aspect": 1.5, "floor": 0},
+            {"type": "Kitchen", "area": 16.0, "aspect": 1.3, "floor": 0},
+            {"type": "Dining", "area": 14.0, "aspect": 1.4, "floor": 0},
+            {"type": "Office", "area": 12.0, "aspect": 1.2, "floor": 0},
+            {"type": "Bathroom", "area": 5.0, "aspect": 1.1, "floor": 0},
+            {"type": "Stair", "area": 8.0, "aspect": 2.1, "floor": 0},
+            {"type": "Hall", "area": 10.0, "aspect": 2.3, "floor": 1},
+            {"type": "Bedroom", "area": 15.0, "aspect": 1.3, "floor": 1},
+            {"type": "Bedroom", "area": 14.5, "aspect": 1.2, "floor": 1},
+            {"type": "Bedroom", "area": 13.5, "aspect": 1.2, "floor": 1},
+            {"type": "Bathroom", "area": 5.2, "aspect": 1.3, "floor": 1},
+            {"type": "Bathroom", "area": 4.6, "aspect": 1.2, "floor": 1},
+            {"type": "Laundry", "area": 5.0, "aspect": 1.1, "floor": 1},
+            {"type": "Hall", "area": 8.0, "aspect": 2.0, "floor": 2},
+            {"type": "Bedroom", "area": 13.0, "aspect": 1.2, "floor": 2},
+            {"type": "Bedroom", "area": 12.5, "aspect": 1.1, "floor": 2},
+            {"type": "Bathroom", "area": 4.5, "aspect": 1.1, "floor": 2},
+            {"type": "Loft", "area": 18.0, "aspect": 1.6, "floor": 2},
+        ],
+        "adjacencies": [
+            {"a": "Entry", "b": "Living", "type": "door"},
+            {"a": "Living", "b": "Dining", "type": "open"},
+            {"a": "Dining", "b": "Kitchen", "type": "open"},
+            {"a": "Living", "b": "Office", "type": "door"},
+            {"a": "Living", "b": "Stair", "type": "door"},
+            {"a": "Stair", "b": "Hall", "type": "open"},
+            {"a": "Hall", "b": "Bedroom", "type": "door"},
+            {"a": "Hall", "b": "Bathroom", "type": "door"},
+            {"a": "Loft", "b": "Bedroom", "type": "open"},
+        ]
+    }))
 
-	var plan_2 := ProgramInstance.new()
-	plan_2.total_sqft = 260.0
-	plan_2.footprint = Vector2i(16, 21)
-	plan_2.floors = 1
-	plan_2.bedrooms = 4
-	plan_2.bathrooms = 3
+    return data
 
-	plan_2.rooms = [
-		{"type": "Entry", "area": 9.5, "aspect": 1.41, "floor": 0},
-		{"type": "Living", "area": 34.1, "aspect": 1.05, "floor": 0},
-		{"type": "Dining", "area": 11.1, "aspect": 1.2, "floor": 0},
-		{"type": "Kitchen", "area": 20.5, "aspect": 1.54, "floor": 0},
-		{"type": "Office", "area": 9.5, "aspect": 1.41, "floor": 0},
-		{"type": "Bedroom", "area": 23.7, "aspect": 1.13, "floor": 0},
-		{"type": "Bathroom", "area": 16.7, "aspect": 1.25, "floor": 0},
-		{"type": "Closet", "area": 5.6, "aspect": 2.4, "floor": 0},
-		{"type": "Bedroom", "area": 11.6, "aspect": 1.0, "floor": 0},
-		{"type": "Bedroom", "area": 11.5, "aspect": 1.02, "floor": 0},
-		{"type": "Bedroom", "area": 12.7, "aspect": 1.05, "floor": 0},
-		{"type": "Bathroom", "area": 3.7, "aspect": 1.6, "floor": 0},
-		{"type": "Bathroom", "area": 4.6, "aspect": 2.0, "floor": 0},
-		{"type": "Bathroom", "area": 2.8, "aspect": 1.2, "floor": 0},
-		{"type": "Laundry", "area": 5.9, "aspect": 1.0, "floor": 0},
-		{"type": "Pantry", "area": 3.0, "aspect": 2.0, "floor": 0},
-		{"type": "Garage", "area": 83.2, "aspect": 1.56, "floor": 0},
-		{"type": "Porch", "area": 24.6, "aspect": 7.35, "floor": 0},
-		{"type": "Porch", "area": 37.8, "aspect": 2.83, "floor": 0},
-		{"type": "Kitchen", "area": 8.9, "aspect": 1.5, "floor": 0},
-	]
+static func _make_program(desc: Dictionary) -> ProgramInstance:
+    var prog := ProgramInstance.new()
+    prog.floors = int(desc.get("floors", 1))
+    prog.bedrooms = int(desc.get("bedrooms", 0))
+    prog.bathrooms = int(desc.get("bathrooms", 0))
+    prog.total_m2 = float(desc.get("total_m2", 0.0))
+    prog.footprint = desc.get("footprint", Vector2i.ZERO)
+    prog.rooms = []
+    for room in desc.get("rooms", []):
+        if room is Dictionary:
+            prog.rooms.append(room.duplicate(true))
+    prog.adjacencies = []
+    for edge in desc.get("adjacencies", []):
+        if edge is Dictionary:
+            prog.adjacencies.append(edge.duplicate(true))
+    return prog
 
-	plan_2.adjacencies = [
-		{"a": "Entry", "b": "Dining", "type": "door"},
-		{"a": "Entry", "b": "Office", "type": "door"},
-		{"a": "Entry", "b": "Living", "type": "open"},
-		{"a": "Living", "b": "Kitchen", "type": "open"},
-		{"a": "Kitchen", "b": "Dining", "type": "open"},
-		{"a": "Kitchen", "b": "Laundry", "type": "door"},
-		{"a": "Kitchen", "b": "Pantry", "type": "door"},
-		{"a": "Kitchen", "b": "Bathroom", "type": "door"},
-		{"a": "Kitchen", "b": "Porch", "type": "door"},
-		{"a": "Living", "b": "Bedroom", "type": "door"},
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"},
-		{"a": "Bedroom", "b": "Closet", "type": "door"},
-		{"a": "Living", "b": "Bedroom", "type": "door"},
-		{"a": "Living", "b": "Bedroom", "type": "door"},
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"},
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"},
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"},
-		{"a": "Garage", "b": "Kitchen", "type": "door"},
-	]
+enum AdjType { OPEN = 0, DOOR = 1 }
 
-	data.single_story.append(plan_2)
-	
-	# ========================================
-	# PLAN #3: Two-Story Traditional/Country
-	# 3BR/2.5BA, 2400 sqft (223 m²), 52' × 46'
-	# Features: 2-car garage, vaulted living, study, porches
-	# ========================================
+static func default_binning_config() -> Dictionary:
+    return {
+        "method": "fixed",
+        "sqft_edges": PackedFloat64Array([80.0, 120.0, 160.0, 220.0, 300.0]),
+        "foot_w_edges": PackedFloat64Array([6.0, 8.0, 10.0, 12.0, 14.0, 18.0]),
+        "foot_d_edges": PackedFloat64Array([6.0, 8.0, 10.0, 12.0, 14.0, 18.0]),
+        "room_area_edges": PackedFloat64Array([6.0, 9.0, 12.0, 16.0, 21.0, 27.0, 36.0]),
+        "aspect_edges": PackedFloat64Array([1.0, 1.25, 1.5, 2.0, 3.0, 5.0]),
+        "n_bins_sqft": 5,
+        "n_bins_foot_w": 6,
+        "n_bins_foot_d": 6,
+        "n_bins_room_area": 7,
+        "n_bins_aspect": 6,
+}
 
-	var plan_3 := ProgramInstance.new()
+static func derive_schema_from_corpus(instances: Array) -> Dictionary:
+    var types := {}
+    var adj := {}
+    var count_max := {}
+    for prog in instances:
+        var dict_prog := _program_to_dict(prog)
+        var counts: Dictionary = dict_prog.get("room_counts", {})
+        for t in counts.keys():
+            types[t] = true
+            var c := int(counts[t])
+            var prev := int(count_max.get(t, 0))
+            if c > prev:
+                count_max[t] = c
+        for entry in dict_prog.get("adj_pairs", []):
+            if entry is Dictionary:
+                var label := String(entry.get("pair", ""))
+                if label != "":
+                    adj[label] = true
+        var summary_var := dict_prog.get("adj_summary", {})
+        if summary_var is Dictionary:
+            for label in summary_var.keys():
+                if String(label) != "":
+                    adj[String(label)] = true
+    var type_list: Array = types.keys()
+    type_list.sort()
+    var adj_list: Array = adj.keys()
+    adj_list.sort()
+    var schema := {
+        "room_types": type_list,
+        "room_type_labels": type_list,
+        "adj_pairs": adj_list,
+        "adj_pair_labels": adj_list,
+        "adj_pairs_count": adj_list.size(),
+        "count_max_by_type": count_max,
+        "adj_type_labels": [],
+        "exist_labels": [0, 1],
+    }
+    return schema
 
-	# Global features
-	plan_3.total_sqft = 223.0  # 2400 sqft = 223 m²
-	plan_3.footprint = Vector2i(16, 14)  # 52' × 46' ≈ 15.8m × 14.0m
-	plan_3.floors = 2
-	plan_3.bedrooms = 3
-	plan_3.bathrooms = 3  # 2 full + 1 powder (count as 3 for simplicity)
+static func _merge_schema(base: Dictionary, override: Dictionary, edges: Dictionary) -> Dictionary:
+    var merged := base.duplicate(true)
+    var override_copy := override.duplicate(true)
 
-	# Rooms with measurements from floor plan
-	plan_3.rooms = [
-		# ===== FLOOR 1 (Ground Floor) =====
-		
-		# Entry/Circulation
-		{"type": "Entry", "area": 6.7, "aspect": 1.13, "floor": 0},  # Foyer: 9' × 8'
-		
-		# Living Spaces
-		{"type": "Living", "area": 33.2, "aspect": 1.4, "floor": 0},   # Living Room: 22'-4" × 16'
-		{"type": "Dining", "area": 12.6, "aspect": 1.12, "floor": 0},  # Dining: 12'-4" × 11'
-		{"type": "Kitchen", "area": 10.3, "aspect": 1.37, "floor": 0}, # Kitchen: 12'-4" × 9'
-		
-		# Study
-		{"type": "Office", "area": 5.7, "aspect": 1.24, "floor": 0},   # Study: 8'-8" × 7'
-		
-		# Master Suite (on ground floor)
-		{"type": "Bedroom", "area": 17.2, "aspect": 1.22, "floor": 0}, # Master: 12'-4" × 15'
-		{"type": "Bathroom", "area": 5.1, "aspect": 1.37, "floor": 0}, # Master Bath: 8'-8" × 6'-4"
-		
-		# Additional Ground Floor Spaces
-		{"type": "Bathroom", "area": 2.3, "aspect": 1.0, "floor": 0},  # Powder: 5' × 5'
-		{"type": "Pantry", "area": 1.3, "aspect": 1.56, "floor": 0},   # Pantry: 3' × 4'-8"
-		{"type": "Utility", "area": 2.2, "aspect": 1.5, "floor": 0},   # Storage: 4' × 6'
-		
-		# Garage
-		{"type": "Garage", "area": 40.9, "aspect": 1.1, "floor": 0},   # 2-car: 20' × 22'
-		
-		# Porches
-		{"type": "Porch", "area": 4.1, "aspect": 2.75, "floor": 0},    # Front: 11' × 4'
-		{"type": "Porch", "area": 8.2, "aspect": 5.5, "floor": 0},     # Rear: 22' × 4'
-		
-		# ===== FLOOR 2 (Upper Floor) =====
-		
-		# Circulation
-		{"type": "Hall", "area": 6.7, "aspect": 2.0, "floor": 1},      # Hall/Landing: 12' × 6'
-		
-		# Bedrooms
-		{"type": "Bedroom", "area": 12.6, "aspect": 1.12, "floor": 1}, # Bed #2: 12'-4" × 11'
-		{"type": "Bedroom", "area": 11.6, "aspect": 1.03, "floor": 1}, # Bed #3: 11' × 11'-4"
-		
-		# Bathroom
-		{"type": "Bathroom", "area": 5.1, "aspect": 1.37, "floor": 1}, # Bath: 8'-8" × 6'-4"
-	]
+    var override_types := override_copy.get("room_types", override_copy.get("room_type_labels", []))
+    if override_types is Array:
+        var merged_types: Array = merged.get("room_types", [])
+        for t in override_types:
+            if not merged_types.has(t):
+                merged_types.append(t)
+        merged_types.sort()
+        merged["room_types"] = merged_types
+        merged["room_type_labels"] = merged_types
 
-	# Adjacencies from floor plan
-	plan_3.adjacencies = [
-		# ===== Floor 1 Adjacencies =====
-		
-		# Main circulation
-		{"a": "Entry", "b": "Living", "type": "open"},   # Foyer to Living
-		{"a": "Entry", "b": "Garage", "type": "door"},
-		{"a": "Entry", "b": "Bathroom", "type": "door"}, # Powder room
-		{"a": "Entry", "b": "Porch", "type": "door"},    # Front porch
-		
-		# Open concept living
-		{"a": "Living", "b": "Dining", "type": "open"},
-		{"a": "Living", "b": "Kitchen", "type": "open"},  # Vaulted ceiling connection
-		{"a": "Kitchen", "b": "Dining", "type": "open"},
-		
-		# Living room connections
-		{"a": "Living", "b": "Office", "type": "door"},   # Study
-		{"a": "Living", "b": "Bedroom", "type": "door"},  # Master bedroom
-		
-		# Kitchen connections
-		{"a": "Kitchen", "b": "Pantry", "type": "door"},
-		{"a": "Kitchen", "b": "Porch", "type": "door"},   # Rear porch
-		
-		# Master suite
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"}, # Master to master bath
-		
-		# ===== Floor 2 Adjacencies =====
-		
-		# Upper floor circulation
-		{"a": "Hall", "b": "Bedroom", "type": "door"},    # Hall to Bed #2
-		{"a": "Hall", "b": "Bedroom", "type": "door"},    # Hall to Bed #3
-		{"a": "Hall", "b": "Bathroom", "type": "door"},   # Hall to shared bath
-		
-		# Bedroom-Bathroom connections (Jack-and-Jill style)
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"}, # Bed #2 to bath
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"}, # Bed #3 to bath
-	]
+    var override_adj := override_copy.get("adj_pair_labels", override_copy.get("adj_pairs", []))
+    if override_adj is Array:
+        var merged_adj: Array = merged.get("adj_pairs", [])
+        for label in override_adj:
+            if not merged_adj.has(label):
+                merged_adj.append(label)
+        merged_adj.sort()
+        merged["adj_pairs"] = merged_adj
+        merged["adj_pair_labels"] = merged_adj
+        merged["adj_pairs_count"] = merged_adj.size()
 
-	# Add to dataset
-	data.two_story.append(plan_3)
-	
-	# ========================================
-	# PLAN #4: Large Two-Story Craftsman
-	# 4-5BR/3.5-4.5BA, 3800 sqft (353 m²), 57' × 56'
-	# Features: Optional main-floor master, bonus room, lanai, veranda
-	# ========================================
+    var count_override := override_copy.get("count_max_by_type", {})
+    if count_override is Dictionary:
+        var merged_counts: Dictionary = merged.get("count_max_by_type", {})
+        for key in count_override.keys():
+            var val := int(count_override[key])
+            var prev := int(merged_counts.get(key, 0))
+            if val > prev:
+                merged_counts[key] = val
+        merged["count_max_by_type"] = merged_counts
 
-	var plan_4 := ProgramInstance.new()
+    merged["total_m2_edges"] = edges.get("total_m2_edges", merged.get("total_m2_edges", PackedFloat64Array()))
+    merged["footprint_w_edges"] = edges.get("footprint_w_edges", merged.get("footprint_w_edges", PackedFloat64Array()))
+    merged["footprint_d_edges"] = edges.get("footprint_d_edges", merged.get("footprint_d_edges", PackedFloat64Array()))
+    merged["room_area_edges"] = edges.get("room_area_edges", merged.get("room_area_edges", PackedFloat64Array()))
+    merged["aspect_edges"] = edges.get("aspect_edges", merged.get("aspect_edges", PackedFloat64Array()))
+    merged["bin_edges"] = {
+        "total_sqft": merged.get("total_m2_edges", PackedFloat64Array()),
+        "width": merged.get("footprint_w_edges", PackedFloat64Array()),
+        "depth": merged.get("footprint_d_edges", PackedFloat64Array()),
+        "area": merged.get("room_area_edges", PackedFloat64Array()),
+        "aspect": merged.get("aspect_edges", PackedFloat64Array()),
+    }
 
-	# Global features
-	plan_4.total_sqft = 353.0  # 3800 sqft = 353 m²
-	plan_4.footprint = Vector2i(17, 17)  # 57' × 56' ≈ 17.4m × 17.1m
-	plan_4.floors = 2
-	plan_4.bedrooms = 4  # 3 standard + 1 game room (can be 5 with optional master)
-	plan_4.bathrooms = 4  # 3 full + 1 powder (can be 5 with optional master bath)
+    return merged
 
-	# Rooms with measurements from floor plan
-	plan_4.rooms = [
-		# ===== FLOOR 1 (Ground Floor) =====
-		
-		# Entry/Circulation
-		{"type": "Entry", "area": 11.1, "aspect": 1.2, "floor": 0},  # Foyer: 10' × 12'
-		{"type": "Hall", "area": 11.1, "aspect": 1.88, "floor": 0},  # Hall: 8' × 15'
-		
-		# Living Spaces
-		{"type": "Dining", "area": 15.2, "aspect": 1.14, "floor": 0},  # Dining: 12' × 13'-8"
-		{"type": "Living", "area": 32.8, "aspect": 1.13, "floor": 0},  # Family: 20' × 17'-8"
-		{"type": "Kitchen", "area": 18.9, "aspect": 2.03, "floor": 0}, # Kitchen: 10' × 20'-4"
-		
-		# Study/Office
-		{"type": "Office", "area": 11.1, "aspect": 1.2, "floor": 0},   # Study: 12' × 10'
-		
-		# Utility Spaces
-		{"type": "Pantry", "area": 9.3, "aspect": 1.0, "floor": 0},    # Pantry: 10' × 10'
-		{"type": "Laundry", "area": 5.5, "aspect": 1.38, "floor": 0},  # Laundry: 9' × 6'-6"
-		{"type": "Bathroom", "area": 2.8, "aspect": 1.2, "floor": 0},  # Powder: 5' × 6'
-		
-		# Optional Main-Floor Master Suite
-		{"type": "Bedroom", "area": 20.8, "aspect": 1.14, "floor": 0}, # Master: 14' × 16'
-		{"type": "Bathroom", "area": 14.5, "aspect": 1.08, "floor": 0}, # Master Bath: 13' × 12'
-		{"type": "Closet", "area": 2.8, "aspect": 1.2, "floor": 0},    # WIC 1: 5' × 6'
-		{"type": "Closet", "area": 6.7, "aspect": 2.0, "floor": 0},    # WIC 2: 6' × 12'
-		
-		# Garage
-		{"type": "Garage", "area": 45.2, "aspect": 1.03, "floor": 0},  # 2-car: 22'-5" × 21'-8"
-		
-		# Outdoor Spaces
-		{"type": "Porch", "area": 30.7, "aspect": 3.3, "floor": 0},    # Lanai: 33' × 10'
-		{"type": "Porch", "area": 24.5, "aspect": 4.13, "floor": 0},   # Veranda: 33' × 8'
-		
-		# ===== FLOOR 2 (Upper Floor) =====
-		
-		# Circulation
-		{"type": "Hall", "area": 7.4, "aspect": 1.25, "floor": 1},     # Mezzanine: 8' × 10'
-		
-		# Vaulted Space
-		{"type": "Living", "area": 23.2, "aspect": 1.5, "floor": 1},   # Open to Family (2-story)
-		
-		# Bedrooms
-		{"type": "Bedroom", "area": 12.0, "aspect": 1.07, "floor": 1}, # Bed #2: 11' × 11'-9"
-		{"type": "Bedroom", "area": 11.0, "aspect": 1.18, "floor": 1}, # Bed #3: 11'-9" × 10'
-		{"type": "Bedroom", "area": 20.7, "aspect": 1.45, "floor": 1}, # Game/BR: 12'-5" × 18'
-		
-		# Bathrooms
-		{"type": "Bathroom", "area": 7.2, "aspect": 1.57, "floor": 1}, # Bath #2: 7' × 11'
-		{"type": "Bathroom", "area": 5.4, "aspect": 2.3, "floor": 1},  # Bath #3: 11'-6" × 5'
-		
-		# Closets
-		{"type": "Closet", "area": 1.9, "aspect": 1.25, "floor": 1},   # Bed 2 closet: 4' × 5'
-		{"type": "Closet", "area": 1.9, "aspect": 1.25, "floor": 1},   # Bed 3 closet: 4' × 5'
-		
-		# Bonus Room
-		{"type": "Bedroom", "area": 33.9, "aspect": 2.05, "floor": 1}, # Bonus: 13'-4" × 27'-4"
-		{"type": "Utility", "area": 4.0, "aspect": 1.7, "floor": 1},   # Storage: 8'-6" × 5'
-		
-		# Balcony
-		{"type": "Porch", "area": 8.9, "aspect": 1.5, "floor": 1},     # Balcony: 12' × 8'
-	]
+static func bin_corpus(instances: Array, options = null) -> Dictionary:
+    var provided_schema: Dictionary = {}
+    var cfg: Dictionary = default_binning_config()
+    if options is Dictionary:
+        var dict_options: Dictionary = options
+        if dict_options.has("room_types") or dict_options.has("room_type_labels"):
+            provided_schema = dict_options
+        elif dict_options.has("method") or dict_options.has("sqft_edges"):
+            cfg = dict_options
+    var edges := _prepare_edges(instances, cfg)
+    apply_binning(instances, edges)
 
-	# Adjacencies from floor plan
-	plan_4.adjacencies = [
-		# ===== Floor 1 Adjacencies =====
-		
-		# Main circulation
-		{"a": "Entry", "b": "Dining", "type": "open"},
-		{"a": "Entry", "b": "Office", "type": "door"},   # Study
-		{"a": "Entry", "b": "Living", "type": "open"},   # Family room
-		{"a": "Entry", "b": "Hall", "type": "door"},
-		
-		# Open concept living
-		{"a": "Living", "b": "Kitchen", "type": "open"},
-		{"a": "Kitchen", "b": "Dining", "type": "open"},
-		{"a": "Living", "b": "Porch", "type": "door"},   # Lanai
-		
-		# Kitchen connections
-		{"a": "Kitchen", "b": "Pantry", "type": "door"},
-		
-		# Hall connections
-		{"a": "Hall", "b": "Laundry", "type": "door"},
-		{"a": "Hall", "b": "Bathroom", "type": "door"}, # Powder
-		{"a": "Hall", "b": "Bedroom", "type": "door"},  # Master suite
-		{"a": "Hall", "b": "Garage", "type": "door"},
-		
-		# Master suite (optional)
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"}, # Master bath
-		{"a": "Bedroom", "b": "Closet", "type": "door"},   # WIC 1
-		{"a": "Bathroom", "b": "Closet", "type": "door"},  # WIC 2
-		
-		# Veranda access
-		{"a": "Dining", "b": "Porch", "type": "door"},
-		
-		# ===== Floor 2 Adjacencies =====
-		
-		# Upper circulation
-		{"a": "Hall", "b": "Bedroom", "type": "open"},    # Game room
-		{"a": "Hall", "b": "Porch", "type": "door"},      # Balcony
-		{"a": "Hall", "b": "Bedroom", "type": "door"},    # Bed #2
-		{"a": "Hall", "b": "Bedroom", "type": "door"},    # Bed #3
-		{"a": "Hall", "b": "Bathroom", "type": "door"},   # Bath #3
-		{"a": "Hall", "b": "Bedroom", "type": "door"},    # Bonus room
-		
-		# Bedroom-bathroom connections
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"}, # Bed #2 to Bath #2
-		{"a": "Bedroom", "b": "Closet", "type": "door"},   # Bed #2 closet
-		{"a": "Bedroom", "b": "Closet", "type": "door"},   # Bed #3 closet
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"}, # Bed #3 to Bath #3
-		
-		# Bonus room connections
-		{"a": "Bedroom", "b": "Utility", "type": "door"},  # Bonus to Storage
-	]
+    var exported: Array = []
+    for prog in instances:
+        exported.append(_program_to_dict(prog))
 
-	# Add to dataset
-	data.two_story.append(plan_4)
-	
-	# ========================================
-	# PLAN #5: Luxury 3-Level Mountain/Lakefront
-	# 5BR/5.5BA, 5200 sqft (483 m²), 62' × 58'
-	# Features: Walkout basement, wine cellar, wet bar, multiple decks
-	# ========================================
+    var schema := _build_schema(exported, edges)
+    if not provided_schema.is_empty():
+        schema = _merge_schema(schema, provided_schema, edges)
 
-	var plan_5 := ProgramInstance.new()
+    var adj_pairs_variant := schema.get("adj_pair_labels", schema.get("adj_pairs", []))
+    var adj_pairs: Array = []
+    if adj_pairs_variant is Array:
+        adj_pairs = adj_pairs_variant.duplicate()
+    for inst in exported:
+        if typeof(inst) != TYPE_DICTIONARY:
+            continue
+        var dict_inst: Dictionary = inst
+        for label in adj_pairs:
+            var exist_key := "adj_exist:%s" % label
+            if not dict_inst.has(exist_key):
+                dict_inst[exist_key] = 0
 
-	# Global features
-	plan_5.total_sqft = 483.0  # 5200 sqft = 483 m²
-	plan_5.footprint = Vector2i(19, 18)  # 62' × 58' ≈ 18.9m × 17.7m
-	plan_5.floors = 3  # Basement (-1) + Main (0) + Upper (1)
-	plan_5.bedrooms = 5  # 1 main + 2 upper + 2 basement
-	plan_5.bathrooms = 6  # 3 full + 3 partial (simplified to 6)
+    var room_type_labels_variant := schema.get("room_type_labels", schema.get("room_types", []))
+    if room_type_labels_variant is Array:
+        var room_type_labels: Array = (room_type_labels_variant as Array)
+        for inst in exported:
+            if typeof(inst) != TYPE_DICTIONARY:
+                continue
+            var dict_inst: Dictionary = inst
+            for room_type in room_type_labels:
+                var count_key := "count_%s" % room_type
+                if not dict_inst.has(count_key):
+                    dict_inst[count_key] = 0
+                var exists_key := "%s_exists" % room_type
+                if not dict_inst.has(exists_key):
+                    dict_inst[exists_key] = 0
 
-	# Rooms with measurements from floor plan
-	plan_5.rooms = [
-		# ===== FLOOR 0 (Main Floor) =====
-		
-		# Entry/Circulation
-		{"type": "Entry", "area": 7.2, "aspect": 1.57, "floor": 0},  # Foyer: 7' × 11'
-		
-		# Living Spaces
-		{"type": "Living", "area": 33.4, "aspect": 1.11, "floor": 0},   # Great Room: 20' × 18'
-		{"type": "Dining", "area": 20.1, "aspect": 1.5, "floor": 0},    # Dining: 12' × 18'
-		{"type": "Kitchen", "area": 20.4, "aspect": 1.82, "floor": 0},  # Kitchen: 11' × 20'
-		{"type": "Living", "area": 18.1, "aspect": 1.15, "floor": 0},   # Hearth: 15' × 13'
-		
-		# Master Suite (Main Floor)
-		{"type": "Bedroom", "area": 23.8, "aspect": 1.0, "floor": 0},   # Master: 16' × 16'
-		{"type": "Bathroom", "area": 10.2, "aspect": 1.5, "floor": 0},  # Master Bath: 9'×6' + 8'×7'
-		{"type": "Closet", "area": 7.8, "aspect": 2.33, "floor": 0},    # Master Closet: 6' × 14'
-		
-		# Utility Spaces
-		{"type": "Pantry", "area": 1.9, "aspect": 1.25, "floor": 0},    # Pantry: 4' × 5'
-		{"type": "Laundry", "area": 6.1, "aspect": 1.83, "floor": 0},   # Mud Room: 11' × 6'
-		
-		# Garage
-		{"type": "Garage", "area": 60.6, "aspect": 1.5, "floor": 0},    # 2.5-car: 13'×28' + 12'×24'
-		
-		# Outdoor Spaces (Main)
-		{"type": "Porch", "area": 15.8, "aspect": 1.7, "floor": 0},     # Covered Deck: 10' × 17'
-		{"type": "Porch", "area": 10.4, "aspect": 2.29, "floor": 0},    # Deck (Master): 16' × 7'
-		{"type": "Porch", "area": 10.6, "aspect": 3.17, "floor": 0},    # Deck (Dining): 19' × 6'
-		{"type": "Porch", "area": 10.0, "aspect": 1.33, "floor": 0},    # Screened: 9' × 12'
-		{"type": "Porch", "area": 8.4, "aspect": 1.11, "floor": 0},     # Covered Entry: 9' × 10'
-		{"type": "Porch", "area": 28.4, "aspect": 1.06, "floor": 0},    # Main Porch: 18' × 17'
-		
-		# Stairs (Main Floor)
-		{"type": "Stair", "area": 6.5, "aspect": 2.0, "floor": 0},
-		
-		# ===== FLOOR 1 (Upper Floor) =====
-		
-		# Open Space
-		{"type": "Living", "area": 19.5, "aspect": 1.07, "floor": 1},   # Open to Below: 15' × 14'
-		
-		# Circulation
-		{"type": "Hall", "area": 8.0, "aspect": 2.5, "floor": 1},       # Upper Hall
-		
-		# Bedrooms
-		{"type": "Bedroom", "area": 13.3, "aspect": 1.18, "floor": 1},  # Bed #2: 13' × 11'
-		{"type": "Bedroom", "area": 12.3, "aspect": 1.09, "floor": 1},  # Bed #3: 12' × 11'
-		
-		# Bathroom
-		{"type": "Bathroom", "area": 9.7, "aspect": 1.63, "floor": 1},  # Bath: 13' × 8'
-		
-		# Closets
-		{"type": "Closet", "area": 2.2, "aspect": 1.5, "floor": 1},     # Br 2 Closet: 4' × 6'
-		{"type": "Closet", "area": 2.2, "aspect": 1.5, "floor": 1},     # Br 3 Closet: 4' × 6'
-		
-		# Outdoor Space (Upper)
-		{"type": "Porch", "area": 23.7, "aspect": 1.13, "floor": 1},    # Covered Deck: 15' × 17'
-		
-		# Stairs (Upper Floor)
-		{"type": "Stair", "area": 6.5, "aspect": 2.0, "floor": 1},
-		
-		# ===== FLOOR -1 (Lower Level/Basement) =====
-		
-		# Entertainment Spaces
-		{"type": "Living", "area": 20.8, "aspect": 1.14, "floor": -1},  # Recreation: 16' × 14'
-		{"type": "Living", "area": 28.4, "aspect": 1.06, "floor": -1},  # Family: 18' × 17'
-		{"type": "Kitchen", "area": 16.7, "aspect": 1.25, "floor": -1}, # Wet Bar: 15' × 12'
-		{"type": "Living", "area": 14.3, "aspect": 1.27, "floor": -1},  # Tasting: 11' × 14'
-		{"type": "Utility", "area": 6.5, "aspect": 2.8, "floor": -1},   # Wine Cellar: 5' × 14'
-		
-		# Bedrooms (Lower)
-		{"type": "Bedroom", "area": 10.2, "aspect": 1.1, "floor": -1},  # Bed #4: 10' × 11'
-		{"type": "Bedroom", "area": 10.2, "aspect": 1.1, "floor": -1},  # Bed #5: 10' × 11'
-		
-		# Bathroom (Lower)
-		{"type": "Bathroom", "area": 6.7, "aspect": 2.0, "floor": -1},  # Bath: 6' × 12'
-		
-		# Utility Spaces (Lower)
-		{"type": "Utility", "area": 15.7, "aspect": 1.0, "floor": -1},  # Storage: 13' × 13'
-		{"type": "Utility", "area": 21.4, "aspect": 2.3, "floor": -1},  # Mechanical: 23' × 10'
-		{"type": "Living", "area": 23.8, "aspect": 1.0, "floor": -1},   # Exercise: 16' × 16'
-		{"type": "Laundry", "area": 6.7, "aspect": 1.13, "floor": -1},  # Mud Room: 8' × 9'
-		{"type": "Laundry", "area": 6.7, "aspect": 1.13, "floor": -1},  # Laundry: 8' × 9'
-		
-		# Outdoor Space (Lower)
-		{"type": "Porch", "area": 89.9, "aspect": 3.0, "floor": -1},    # Covered Patio: multiple sections
-		
-		# Stairs (Lower Level)
-		{"type": "Stair", "area": 6.5, "aspect": 2.0, "floor": -1},
-	]
+    var result := {
+        "schema": schema,
+        "instances": exported,
+    }
+    if DEBUG_VERIFY:
+        _dbg_bins(schema, exported)
+    return result
 
-	# Adjacencies from floor plan
-	plan_5.adjacencies = [
-		# ===== Floor 0 (Main) Adjacencies =====
-		
-		# Main circulation
-		{"a": "Entry", "b": "Living", "type": "open"},   # Entry to Great Room
-		{"a": "Entry", "b": "Porch", "type": "door"},    # Entry to Front Porch
-		{"a": "Entry", "b": "Stair", "type": "door"},    # Entry to Stairs
-		
-		# Open concept living
-		{"a": "Living", "b": "Dining", "type": "open"},  # Great Room to Dining
-		{"a": "Living", "b": "Living", "type": "open"},  # Great Room to Hearth
-		{"a": "Living", "b": "Kitchen", "type": "open"},
-		{"a": "Dining", "b": "Kitchen", "type": "open"},
-		
-		# Kitchen connections
-		{"a": "Kitchen", "b": "Pantry", "type": "door"},
-		{"a": "Kitchen", "b": "Laundry", "type": "door"},  # Mud Room
-		{"a": "Kitchen", "b": "Porch", "type": "door"},    # Covered Deck
-		
-		# Master suite
-		{"a": "Living", "b": "Bedroom", "type": "door"},   # Hearth to Master
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"},
-		{"a": "Bedroom", "b": "Closet", "type": "door"},
-		{"a": "Bedroom", "b": "Porch", "type": "door"},    # Master to Deck
-		
-		# Garage access
-		{"a": "Laundry", "b": "Garage", "type": "door"},   # Mud Room to Garage
-		
-		# ===== Floor 1 (Upper) Adjacencies =====
-	
-		# Upper circulation
-		{"a": "Hall", "b": "Bedroom", "type": "door"},     # Hall to Bed #2
-		{"a": "Hall", "b": "Bedroom", "type": "door"},     # Hall to Bed #3
-		{"a": "Hall", "b": "Bathroom", "type": "door"},
-		{"a": "Hall", "b": "Stair", "type": "door"},
-		{"a": "Hall", "b": "Porch", "type": "door"},       # Upper Deck
-	
-		# Bedroom connections
-		{"a": "Bedroom", "b": "Closet", "type": "door"},   # Bed #2
-		{"a": "Bedroom", "b": "Closet", "type": "door"},   # Bed #3
-	
-		# ===== Floor -1 (Lower) Adjacencies =====
-	
-		# Entertainment zone
-		{"a": "Stair", "b": "Living", "type": "open"},     # Stairs to Recreation
-		{"a": "Living", "b": "Living", "type": "open"},    # Recreation to Family
-		{"a": "Living", "b": "Kitchen", "type": "open"},   # Recreation to Wet Bar
-		{"a": "Living", "b": "Living", "type": "door"},    # Recreation to Tasting
-		{"a": "Living", "b": "Utility", "type": "door"},   # Tasting to Wine Cellar
-	
-		# Bedroom connections (Lower)
-		{"a": "Living", "b": "Bedroom", "type": "door"},   # Family to Bed #4
-		{"a": "Living", "b": "Bedroom", "type": "door"},   # Family to Bed #5
-		{"a": "Living", "b": "Bathroom", "type": "door"},
-	
-		# Utility connections
-		{"a": "Living", "b": "Laundry", "type": "door"},   # Recreation to Mud Room
-		{"a": "Laundry", "b": "Laundry", "type": "door"},  # Mud Room to Laundry
-		{"a": "Laundry", "b": "Living", "type": "door"},   # Mud Room to Exercise
-		{"a": "Living", "b": "Utility", "type": "door"},   # Exercise to Storage
-	
-		# Outdoor access
-		{"a": "Living", "b": "Porch", "type": "door"},     # Family to Covered Patio
-	]
+static func _dbg_bins(schema: Dictionary, insts: Array) -> void:
+    if insts.is_empty():
+        print("[BIN] empty corpus")
+        return
+    var room_types_count := 0
+    var room_types_var := schema.get("room_type_labels", schema.get("room_types"))
+    if room_types_var is Array:
+        room_types_count = (room_types_var as Array).size()
+    var edges_dict_variant := schema.get("bin_edges", {})
+    var total_bins := 0
+    var footprint_bins := 0
+    var area_bins := 0
+    var aspect_bins := 0
+    if edges_dict_variant is Dictionary:
+        var edges_dict: Dictionary = edges_dict_variant
+        total_bins = _edge_count(edges_dict.get("total_sqft"))
+        var width_bins := _edge_count(edges_dict.get("width")) + 1
+        var depth_bins := _edge_count(edges_dict.get("depth")) + 1
+        footprint_bins = max(1, width_bins * depth_bins)
+        area_bins = _edge_count(edges_dict.get("area"))
+        aspect_bins = _edge_count(edges_dict.get("aspect"))
+    else:
+        total_bins = _edge_count(schema.get("total_m2_edges"))
+        var footprint_w_bins := _edge_count(schema.get("footprint_w_edges")) + 1
+        var footprint_d_bins := _edge_count(schema.get("footprint_d_edges")) + 1
+        footprint_bins = max(1, footprint_w_bins * footprint_d_bins)
+        area_bins = _edge_count(schema.get("room_area_edges"))
+        aspect_bins = _edge_count(schema.get("aspect_edges"))
+    var adj_pairs_count := int(schema.get("adj_pairs_count", 0))
+    print("[BIN] instances=%d room_types=%d adj_pairs=%d" % [
+        insts.size(),
+        room_types_count,
+        adj_pairs_count
+    ])
+    print("[BIN] bins: total_sqft=%d footprint=%d area=%d aspect=%d" % [
+        total_bins,
+        footprint_bins,
+        area_bins,
+        aspect_bins
+    ])
+    var first_variant = insts[0]
+    var first_dict: Dictionary = {}
+    if typeof(first_variant) == TYPE_DICTIONARY:
+        first_dict = first_variant
+    else:
+        first_dict = _program_to_dict(first_variant)
+    var sample_rooms := 0
+    var sample_rooms_variant := first_dict.get("rooms", [])
+    if sample_rooms_variant is Array:
+        sample_rooms = (sample_rooms_variant as Array).size()
+    print("[BIN] sample: total_sqft_bin=%s footprint_bin=%s rooms=%d footprint_pair=%s" % [
+        str(first_dict.get("total_m2_bin", first_dict.get("total_sqft_bin", -1))),
+        str(first_dict.get("footprint_bin", -1)),
+        sample_rooms,
+        str(first_dict.get("footprint_bin_pair", Vector2i.ZERO))
+    ])
+static func apply_binning(instances: Array, edges: Dictionary) -> void:
+    for prog in instances:
+        _bin_program(prog, edges)
 
-	# Add to dataset
-	data.three_story.append(plan_5)
-	
-	# ========================================
-	# PLAN #6: Luxury Single-Story with Bonus Room
-	# 3BR/3.5BA, 3400 sqft (316 m²), 68' × 62'
-	# Features: Open concept, bonus room over garage, extensive covered decks
-	# ========================================
+static func _prepare_edges(instances: Array, cfg: Dictionary) -> Dictionary:
+    var edges: Dictionary = {}
+    var method := String(cfg.get("method", "fixed"))
+    if method == "fixed":
+        edges["total_m2_edges"] = cfg.get("sqft_edges", PackedFloat64Array())
+        edges["footprint_w_edges"] = cfg.get("foot_w_edges", PackedFloat64Array())
+        edges["footprint_d_edges"] = cfg.get("foot_d_edges", PackedFloat64Array())
+        edges["room_area_edges"] = cfg.get("room_area_edges", PackedFloat64Array())
+        edges["aspect_edges"] = cfg.get("aspect_edges", PackedFloat64Array())
+        return edges
 
-	var plan_6 := ProgramInstance.new()
+    edges["total_m2_edges"] = _quantile_edges(_collect_total_m2(instances), int(cfg.get("n_bins_sqft", 5)))
+    edges["footprint_w_edges"] = _quantile_edges(_collect_foot_dim(instances, "w"), int(cfg.get("n_bins_foot_w", 6)))
+    edges["footprint_d_edges"] = _quantile_edges(_collect_foot_dim(instances, "d"), int(cfg.get("n_bins_foot_d", 6)))
+    edges["room_area_edges"] = _quantile_edges(_collect_room_area(instances), int(cfg.get("n_bins_room_area", 7)))
+    edges["aspect_edges"] = _quantile_edges(_collect_room_aspect(instances), int(cfg.get("n_bins_aspect", 6)))
+    return edges
 
-	# Global features
-	plan_6.total_sqft = 316.0  # 3400 sqft = 316 m²
-	plan_6.footprint = Vector2i(21, 19)  # 68' × 62' ≈ 20.7m × 18.9m
-	plan_6.floors = 1  # Single-story main floor (bonus room not counted as full 2nd floor)
-	plan_6.bedrooms = 3  # 2 main floor + 1 bonus
-	plan_6.bathrooms = 4  # 2 full + 1 master bath + 1 powder (simplified to 4)
+static func _bin_program(prog, edges: Dictionary) -> void:
+    if prog == null:
+        return
 
-	# Rooms with measurements from floor plan
-	plan_6.rooms = [
-		# ===== FLOOR 0 (Main Floor) =====
-		
-		# Entry/Circulation
-		{"type": "Entry", "area": 12.4, "aspect": 2.71, "floor": 0},  # Entry: 19' × 7'
-		
-		# Living Spaces
-		{"type": "Living", "area": 20.1, "aspect": 1.5, "floor": 0},   # Living: 18' × 12'
-		{"type": "Living", "area": 31.8, "aspect": 1.06, "floor": 0},  # Great Room: 19' × 18'
-		{"type": "Dining", "area": 23.7, "aspect": 1.13, "floor": 0},  # Dining: 17' × 15'
-		{"type": "Kitchen", "area": 28.4, "aspect": 1.06, "floor": 0}, # Kitchen: 17' × 18'
-		
-		# Master Suite
-		{"type": "Bedroom", "area": 25.3, "aspect": 1.06, "floor": 0}, # Master: 17' × 16'
-		{"type": "Bathroom", "area": 13.0, "aspect": 1.4, "floor": 0}, # Master Bath: 14' × 10'
-		{"type": "Closet", "area": 5.6, "aspect": 2.4, "floor": 0},    # Master Closet: 12' × 5'
-		
-		# Secondary Bedroom
-		{"type": "Bedroom", "area": 14.5, "aspect": 1.08, "floor": 0}, # Bed #2: 12' × 13'
-		{"type": "Closet", "area": 2.2, "aspect": 1.5, "floor": 0},    # Bed #2 Closet: 4' × 6'
-		{"type": "Bathroom", "area": 6.7, "aspect": 1.13, "floor": 0}, # Bath #2: 8' × 9'
-	
-		# Utility Spaces
-		{"type": "Bathroom", "area": 3.9, "aspect": 1.17, "floor": 0}, # Powder: 6' × 7'
-		{"type": "Pantry", "area": 3.9, "aspect": 1.17, "floor": 0},   # Pantry: 6' × 7'
-		{"type": "Laundry", "area": 3.9, "aspect": 1.17, "floor": 0},  # Mud Room: 6' × 7'
-	
-		# Garage
-		{"type": "Garage", "area": 49.1, "aspect": 1.09, "floor": 0},  # 2-car: 22' × 24'
-	
-		# Bonus Room (over garage, accessed by stairs)
-		{"type": "Bedroom", "area": 24.5, "aspect": 1.83, "floor": 1}, # Bonus: 22' × 12'
-	
-		# Outdoor Spaces
-		{"type": "Porch", "area": 92.4, "aspect": 5.07, "floor": 0},   # Covered Deck (front): 71' × 14'
-		{"type": "Porch", "area": 85.8, "aspect": 5.46, "floor": 0},   # Covered Deck (rear): 71' × 13'
-		{"type": "Porch", "area": 30.6, "aspect": 6.71, "floor": 0},   # Covered Deck (side): 7' × 47'
-		{"type": "Porch", "area": 11.1, "aspect": 1.88, "floor": 0},   # Pergola Deck: 8' × 15'
-	]
+    var total_m2 := _prog_total_m2(prog)
+    var footprint := _prog_footprint(prog)
+    var foot_w := float(footprint.x)
+    var foot_d := float(footprint.y)
 
-	# Adjacencies from floor plan
-	plan_6.adjacencies = [
-		# ===== Main Floor Adjacencies =====
-		
-		# Entry connections (cathedral ceiling open space)
-		{"a": "Entry", "b": "Living", "type": "open"},    # Entry to Living
-		{"a": "Entry", "b": "Living", "type": "open"},    # Entry to Great Room (2nd Living node)
-		{"a": "Entry", "b": "Dining", "type": "open"},    # Entry to Dining
-		{"a": "Entry", "b": "Bathroom", "type": "door"},  # Entry to Powder Room
-		
-		# Open concept living
-		{"a": "Living", "b": "Living", "type": "open"},   # Living to Great Room
-		{"a": "Living", "b": "Kitchen", "type": "open"},  # Great Room to Kitchen
-		{"a": "Living", "b": "Dining", "type": "open"},   # Great Room to Dining
-		{"a": "Kitchen", "b": "Dining", "type": "open"},  # Kitchen to Dining
-		
-		# Kitchen connections
-		{"a": "Kitchen", "b": "Pantry", "type": "door"},
-		{"a": "Kitchen", "b": "Laundry", "type": "door"},  # Mud Room
-		{"a": "Kitchen", "b": "Porch", "type": "door"},    # To covered deck
-		
-		# Living room connections
-		{"a": "Living", "b": "Porch", "type": "door"},     # Living to covered deck
-		{"a": "Living", "b": "Porch", "type": "door"},     # Great Room to covered deck
-		
-		# Master suite
-		{"a": "Dining", "b": "Bedroom", "type": "door"},   # Dining to Master
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"},
-		{"a": "Bedroom", "b": "Closet", "type": "door"},
-		{"a": "Bedroom", "b": "Porch", "type": "door"},    # Master to Deck
-		
-		# Secondary bedroom
-		{"a": "Living", "b": "Bedroom", "type": "door"},   # Great Room to Bed #2
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"}, # Bed #2 to Bath #2
-		{"a": "Bedroom", "b": "Closet", "type": "door"},   # Bed #2 to Closet
-	
-		# Garage access
-		{"a": "Laundry", "b": "Garage", "type": "door"},   # Mud Room to Garage
-	
-		# Bonus room (accessed via garage stairs)
-		{"a": "Garage", "b": "Bedroom", "type": "door"},   # Garage to Bonus Room (via stairs)
-	
-		# Outdoor access
-		{"a": "Dining", "b": "Porch", "type": "door"},     # Dining to deck
-		{"a": "Garage", "b": "Porch", "type": "door"},     # Garage to pergola deck
-	]
+    var sqft_edges: PackedFloat64Array = edges.get("total_m2_edges", PackedFloat64Array())
+    var w_edges: PackedFloat64Array = edges.get("footprint_w_edges", PackedFloat64Array())
+    var d_edges: PackedFloat64Array = edges.get("footprint_d_edges", PackedFloat64Array())
 
-	# Add to dataset
-	data.single_story.append(plan_6)
-	
-	# ========================================
-	# PLAN #7: Large Single-Story + Bonus Room
-	# 4BR/3.5BA, 3200 sqft (297 m²), 75' × 65'
-	# Features: Kids' space, study, rear porch, bonus room over garage
-	# ========================================
+    var total_bin := _bin_index(total_m2, sqft_edges)
+    var w_bin := _bin_index(foot_w, w_edges)
+    var d_bin := _bin_index(foot_d, d_edges)
+    var w_bin_count := w_edges.size() + 1
+    var d_bin_count := d_edges.size() + 1
+    var footprint_id := w_bin * d_bin_count + d_bin
 
-	var plan_7 := ProgramInstance.new()
+    _set_field(prog, "total_sqft_bin", total_bin)
+    _set_field(prog, "total_m2_bin", total_bin)
+    _set_field(prog, "footprint_w_bin", w_bin)
+    _set_field(prog, "footprint_d_bin", d_bin)
+    _set_field(prog, "footprint_bin", footprint_id)
+    _set_field(prog, "footprint_bin_pair", Vector2i(w_bin, d_bin))
 
-	# Global features
-	plan_7.total_sqft = 297.0  # 3200 sqft main floor = 297 m² (heated area)
-	plan_7.footprint = Vector2i(23, 20)  # 75' × 65' ≈ 22.9m × 19.8m
-	plan_7.floors = 1  # Single-story main floor (bonus room not counted as full 2nd floor)
-	plan_7.bedrooms = 4  # 3 main floor + 1 bonus
-	plan_7.bathrooms = 4  # 2 full + 1 master bath + 1 half bath (simplified to 4)
+    var rooms: Array = []
+    if prog is ProgramInstance:
+        rooms = prog.rooms
+    elif typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog: Dictionary = prog
+        var raw_rooms = dict_prog.get("rooms")
+        if raw_rooms is Array:
+            rooms = raw_rooms
 
-	# Rooms with measurements from floor plan
-	plan_7.rooms = [
-		# ===== FLOOR 0 (Main Floor) =====
-		
-		# Entry/Circulation
-		{"type": "Entry", "area": 7.1, "aspect": 1.14, "floor": 0},  # Foyer: 9'-4" × 8'-2"
-		{"type": "Entry", "area": 7.8, "aspect": 1.16, "floor": 0},  # Entry: 8'-6" × 9'-10"
-		{"type": "Entry", "area": 8.8, "aspect": 1.36, "floor": 0},  # Stoop: 11'-4" × 8'-4"
-	
-		# Living Spaces
-		{"type": "Living", "area": 38.1, "aspect": 1.04, "floor": 0},  # Great Room: 20'-8" × 19'-10"
-		{"type": "Dining", "area": 15.7, "aspect": 1.18, "floor": 0},  # Dining: 12'-0" × 14'-1"
-		{"type": "Kitchen", "area": 19.0, "aspect": 1.43, "floor": 0}, # Kitchen: 12'-0" × 17'-1"
-		{"type": "Pantry", "area": 8.4, "aspect": 1.6, "floor": 0},    # Pantry: 12'-0" × 7'-6"
-		{"type": "Office", "area": 10.4, "aspect": 1.29, "floor": 0},  # Study: 12'-0" × 9'-4"
-	
-		# Master Suite
-		{"type": "Bedroom", "area": 24.4, "aspect": 1.17, "floor": 0}, # Master: 15'-0" × 17'-6"
-		{"type": "Bathroom", "area": 11.3, "aspect": 1.90, "floor": 0}, # Master Bath: 15'-2" × 8'-0"
-		{"type": "Closet", "area": 12.3, "aspect": 1.75, "floor": 0},  # Master Closet: 15'-2" × 8'-8"
-	
-		# Secondary Bedrooms
-		{"type": "Bedroom", "area": 17.7, "aspect": 1.18, "floor": 0}, # Bed #2: 15'-0" × 12'-9"
-		{"type": "Bedroom", "area": 17.5, "aspect": 1.20, "floor": 0}, # Bed #3: 15'-0" × 12'-6"
-	
-		# Bathrooms
-		{"type": "Bathroom", "area": 8.5, "aspect": 1.33, "floor": 0}, # Bath #2: 11'-0" × 8'-3"
-		{"type": "Bathroom", "area": 4.2, "aspect": 1.8, "floor": 0},  # Bath #3: 5'-0" × 9'-0"
-		{"type": "Bathroom", "area": 2.8, "aspect": 1.2, "floor": 0},  # Half Bath: 5' × 6'
-	
-		# Utility Spaces
-		{"type": "Laundry", "area": 7.4, "aspect": 1.25, "floor": 0},  # Laundry: 10'-0" × 8'-0"
-		{"type": "Hall", "area": 12.4, "aspect": 1.33, "floor": 0},    # Kids' Space: 10'-0" × 13'-4"
-	
-		# Garage
-		{"type": "Garage", "area": 58.4, "aspect": 1.10, "floor": 0},  # 2-car: 23'-10" × 26'-4"
-		{"type": "Utility", "area": 8.5, "aspect": 1.04, "floor": 0},  # Storage (above garage): 9'-4" × 9'-9"
-	
-		# Outdoor Spaces
-		{"type": "Porch", "area": 31.2, "aspect": 1.31, "floor": 0},   # Rear Porch: 21'-0" × 16'-0"
-	
-		# ===== FLOOR 1 (Bonus Room Level) =====
-	
-		# Bonus Room (over garage, accessed by stairs)
-		{"type": "Bedroom", "area": 40.2, "aspect": 2.01, "floor": 1}, # Bonus: 14'-8" × 29'-6"
-		{"type": "Bathroom", "area": 6.7, "aspect": 1.13, "floor": 1}, # Bath #4: 8'-0" × 9'-0"
-		{"type": "Utility", "area": 8.5, "aspect": 1.04, "floor": 1},  # Attic Storage: 9'-4" × 9'-9"
-	]
+    var room_area_edges: PackedFloat64Array = edges.get("room_area_edges", PackedFloat64Array())
+    var aspect_edges: PackedFloat64Array = edges.get("aspect_edges", PackedFloat64Array())
 
-	# Adjacencies from floor plan
-	plan_7.adjacencies = [
-		# ===== Main Floor Adjacencies =====
-		
-		# Entry connections
-		{"a": "Entry", "b": "Living", "type": "open"},    # Foyer to Great Room
-		{"a": "Entry", "b": "Office", "type": "door"},    # Foyer to Study
-		{"a": "Entry", "b": "Entry", "type": "open"},     # Entry to Foyer (connected spaces)
-		{"a": "Entry", "b": "Laundry", "type": "door"},   # Entry to Laundry
-		{"a": "Entry", "b": "Bedroom", "type": "door"},   # Entry to Master Bedroom
-	
-		# Open concept living
-		{"a": "Living", "b": "Dining", "type": "open"},   # Great Room to Dining
-		{"a": "Living", "b": "Kitchen", "type": "open"},  # Great Room to Kitchen
-		{"a": "Kitchen", "b": "Dining", "type": "open"},  # Kitchen to Dining
-	
-		# Kitchen connections
-		{"a": "Kitchen", "b": "Pantry", "type": "door"},
-		{"a": "Kitchen", "b": "Laundry", "type": "door"},
-	
-		# Living room connections
-		{"a": "Living", "b": "Porch", "type": "door"},    # Great Room to Rear Porch
-		{"a": "Dining", "b": "Porch", "type": "door"},    # Dining to Rear Porch
-	
-		# Master suite
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"}, # Master to Master Bath
-		{"a": "Bedroom", "b": "Closet", "type": "door"},   # Master to Master Closet
-		{"a": "Bathroom", "b": "Closet", "type": "door"},  # Master Bath to Master Closet
-	
-		# Kids' wing
-		{"a": "Hall", "b": "Bedroom", "type": "door"},     # Kids' Space to Bed #2
-		{"a": "Hall", "b": "Bedroom", "type": "door"},     # Kids' Space to Bed #3
-		{"a": "Hall", "b": "Bathroom", "type": "door"},    # Kids' Space to Bath #2
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"}, # Bed #2 to Bath #3
-		{"a": "Bedroom", "b": "Porch", "type": "door"},    # Bed #3 to Rear Porch
-	
-		# Garage access
-		{"a": "Garage", "b": "Utility", "type": "door"},   # Garage to Storage (stairs)
-	
-		# Front entry
-		{"a": "Entry", "b": "Entry", "type": "door"},      # Foyer to Stoop
-	
-		# ===== Bonus Level Adjacencies =====
-	
-		# Bonus room (accessed via garage stairs)
-		{"a": "Bedroom", "b": "Bathroom", "type": "door"}, # Bonus to Bath #4
-		{"a": "Bedroom", "b": "Utility", "type": "door"},  # Bonus to Attic Storage
-	]
+    var id_to_idx := {}
+    var label_to_indices := {}
+    var label_cycle := {}
+    var label_counts := {}
 
-	# Add to dataset
-	data.single_story.append(plan_7)
-	
-	print("✓ Training data created: %d single-story, %d two-story, %d three-story" % [
-		data.single_story.size(),
-		data.two_story.size(),
-		data.three_story.size()
-	])
-	
-	return data
+    for i in range(rooms.size()):
+        var room: Dictionary = rooms[i]
+        var room_type := String(room.get("type", "Room"))
+        var count := int(label_counts.get(room_type, 0))
+        label_counts[room_type] = count + 1
+        var base_id := String(room.get("id", room_type))
+        var rid := base_id
+        if rid == room_type and count > 0:
+            rid = "%s_%d" % [room_type, count]
+        room["id"] = rid
+        rooms[i] = room
+        id_to_idx[rid] = i
+
+        if not label_to_indices.has(room_type):
+            label_to_indices[room_type] = []
+        var list_by_type: Array = label_to_indices[room_type]
+        list_by_type.append(i)
+        label_to_indices[room_type] = list_by_type
+
+        var area := _room_area_m2(room)
+        var aspect := _room_aspect(room)
+        room["area_bin"] = _bin_index(area, room_area_edges)
+        room["aspect_bin"] = _bin_index(aspect, aspect_edges)
+        rooms[i] = room
+
+    _set_field(prog, "rooms", rooms)
+
+    var adj_pairs: Array = []
+    var pair_summary: Dictionary = {}
+    var pair_lookup := {}
+
+    var precomputed_pairs := _prog_adj_pairs_list(prog)
+    if not precomputed_pairs.is_empty():
+        for entry in precomputed_pairs:
+            var a_idx := -1
+            var b_idx := -1
+            var exist_flag := true
+            var pair_label := ""
+            if entry is Vector2i:
+                var pair_vec: Vector2i = entry
+                a_idx = pair_vec.x
+                b_idx = pair_vec.y
+            elif typeof(entry) == TYPE_DICTIONARY:
+                var entry_dict: Dictionary = entry
+                a_idx = int(entry_dict.get("a", entry_dict.get("x", -1)))
+                b_idx = int(entry_dict.get("b", entry_dict.get("y", -1)))
+                exist_flag = int(entry_dict.get("exist", 1)) > 0
+                pair_label = String(entry_dict.get("pair", pair_label))
+            if a_idx < 0 or b_idx < 0 or a_idx >= rooms.size() or b_idx >= rooms.size():
+                continue
+            var ai := min(a_idx, b_idx)
+            var bi := max(a_idx, b_idx)
+            var key := "%d|%d" % [ai, bi]
+            if pair_label == "":
+                var type_a := String(rooms[ai].get("type", "Room"))
+                var type_b := String(rooms[bi].get("type", "Room"))
+                pair_label = _room_pair_label(type_a, type_b)
+            if exist_flag:
+                pair_lookup[key] = pair_label
+                pair_summary[pair_label] = true
+            elif not pair_summary.has(pair_label):
+                pair_summary[pair_label] = false
+    else:
+        var edges_src: Array = []
+        if prog is ProgramInstance:
+            var inst: ProgramInstance = prog
+            if inst.adjacencies.size() > 0:
+                edges_src = inst.adjacencies
+            elif inst.adj_pairs.size() > 0:
+                edges_src = inst.adj_pairs
+        elif typeof(prog) == TYPE_DICTIONARY:
+            var dict_prog2: Dictionary = prog
+            var raw_adj = dict_prog2.get("adjacencies")
+            if raw_adj is Array:
+                edges_src = raw_adj
+            elif dict_prog2.has("adj_pairs"):
+                edges_src = dict_prog2.get("adj_pairs")
+        if edges_src.is_empty():
+            var legacy_edges: Variant = null
+            if prog is ProgramInstance:
+                legacy_edges = prog.get("edges")
+            elif typeof(prog) == TYPE_DICTIONARY:
+                legacy_edges = (prog as Dictionary).get("edges")
+            if legacy_edges is Array:
+                edges_src = legacy_edges
+        for edge in edges_src:
+            var a_idx := -1
+            var b_idx := -1
+            if typeof(edge) == TYPE_DICTIONARY:
+                a_idx = _resolve_room_index(edge, "a", id_to_idx, label_to_indices, label_cycle)
+                if a_idx < 0:
+                    a_idx = _resolve_room_index(edge, "a_id", id_to_idx, label_to_indices, label_cycle)
+                b_idx = _resolve_room_index(edge, "b", id_to_idx, label_to_indices, label_cycle)
+                if b_idx < 0:
+                    b_idx = _resolve_room_index(edge, "b_id", id_to_idx, label_to_indices, label_cycle)
+            elif edge is Vector2i:
+                var edge_vec: Vector2i = edge
+                a_idx = edge_vec.x
+                b_idx = edge_vec.y
+            if a_idx < 0 or b_idx < 0 or a_idx >= rooms.size() or b_idx >= rooms.size():
+                continue
+            var ai := min(a_idx, b_idx)
+            var bi := max(a_idx, b_idx)
+            var key := "%d|%d" % [ai, bi]
+            var type_a := String(rooms[ai].get("type", "Room"))
+            var type_b := String(rooms[bi].get("type", "Room"))
+            var pair_label := _room_pair_label(type_a, type_b)
+            pair_lookup[key] = pair_label
+            pair_summary[pair_label] = true
+
+    for i in range(rooms.size()):
+        for j in range(i + 1, rooms.size()):
+            var type_a := String(rooms[i].get("type", "Room"))
+            var type_b := String(rooms[j].get("type", "Room"))
+            var pair_label := _room_pair_label(type_a, type_b)
+            var key := "%d|%d" % [i, j]
+            var exists := pair_lookup.has(key)
+            var exist_flag := 1 if exists else 0
+            adj_pairs.append({
+                "a": i,
+                "b": j,
+                "pair": pair_label,
+                "exist": exist_flag
+            })
+            if not pair_summary.has(pair_label):
+                pair_summary[pair_label] = exists
+            elif exists:
+                pair_summary[pair_label] = true
+
+    _set_field(prog, "adj_pairs", adj_pairs)
+    var summary_out := {}
+    for label in pair_summary.keys():
+        summary_out[label] = {"exist": bool(pair_summary[label])}
+        var exist_key := "adj_exist:%s" % label
+        _set_field(prog, exist_key, 1 if pair_summary[label] else 0)
+    _set_field(prog, "adj_summary", summary_out)
+
+    var counts: Dictionary = {}
+    var exists: Dictionary = {}
+    var count_bins: Dictionary = {}
+    for room_type in label_counts.keys():
+        var count := int(label_counts[room_type])
+        counts[room_type] = count
+        var exists_key := "%s_exists" % room_type
+        var count_key := "count_%s" % room_type
+        var exist_flag := count > 0
+        exists[exists_key] = 1 if exist_flag else 0
+        count_bins["%s_count_bin" % room_type] = _count_to_bin(count)
+        _set_field(prog, exists_key, 1 if exist_flag else 0)
+        _set_field(prog, count_key, count)
+
+    _set_field(prog, "room_counts", counts)
+    _set_field(prog, "room_exists", exists)
+    _set_field(prog, "room_count_bins", count_bins)
+static func _resolve_room_index(edge: Dictionary, field: String, id_to_idx: Dictionary, label_to_indices: Dictionary, label_cycle: Dictionary) -> int:
+    var label := String(edge.get(field, ""))
+    if label == "":
+        return -1
+    if id_to_idx.has(label):
+        return int(id_to_idx[label])
+    if label_to_indices.has(label):
+        var arr: Array = label_to_indices[label]
+        if arr.is_empty():
+            return -1
+        var idx := int(label_cycle.get(label, 0)) % arr.size()
+        label_cycle[label] = (idx + 1) % arr.size()
+        return int(arr[idx])
+    return -1
+
+static func _set_field(target, name: String, value) -> void:
+    if typeof(target) == TYPE_DICTIONARY:
+        target[name] = value
+    else:
+        target.set(name, value)
+
+static func _count_to_bin(count: int) -> int:
+    if count <= 0:
+        return 0
+    if count == 1:
+        return 1
+    if count == 2:
+        return 2
+    return 3
+
+static func _room_pair_label(a: String, b: String) -> String:
+    var ordered := [a, b]
+    ordered.sort()
+    return "%s|%s" % [ordered[0], ordered[1]]
+
+static func _program_to_dict(prog) -> Dictionary:
+    var result := {}
+    if prog == null:
+        return result
+    if prog is ProgramInstance:
+        var inst: ProgramInstance = prog
+        result["floors"] = inst.floors
+        result["bedrooms"] = inst.bedrooms
+        result["bathrooms"] = inst.bathrooms
+        result["total_m2"] = _prog_total_m2(inst)
+        var bin_val := inst.total_m2_bin if inst.total_m2_bin != -1 else inst.total_sqft_bin
+        result["total_m2_bin"] = bin_val
+        var fp := _prog_footprint(inst)
+        result["footprint"] = {"w": fp.x, "d": fp.y}
+        result["footprint_w_bin"] = inst.footprint_w_bin
+        result["footprint_d_bin"] = inst.footprint_d_bin
+        result["footprint_bin"] = inst.footprint_bin
+        result["footprint_bin_pair"] = Vector2i(inst.footprint_w_bin, inst.footprint_d_bin)
+        result["room_counts"] = inst.room_counts.duplicate()
+        result["room_exists"] = inst.room_exists.duplicate()
+        result["room_count_bins"] = inst.room_count_bins.duplicate()
+        for room_type in inst.room_counts.keys():
+            var count_key := "count_%s" % room_type
+            result[count_key] = int(inst.room_counts[room_type])
+        for exists_key in inst.room_exists.keys():
+            result[exists_key] = inst.room_exists[exists_key]
+        var rooms_out: Array = []
+        for room in inst.rooms:
+            if room is Dictionary:
+                rooms_out.append(room.duplicate(true))
+            else:
+                rooms_out.append(room)
+        result["rooms"] = rooms_out
+        var adj_out: Array = []
+        for adj in inst.adj_pairs:
+            if adj is Dictionary:
+                adj_out.append(adj.duplicate(true))
+            else:
+                adj_out.append(adj)
+        result["adj_pairs"] = adj_out
+        if inst.adj_summary is Dictionary:
+            var summary_dict: Dictionary = inst.adj_summary
+            for pair_label in summary_dict.keys():
+                var summary: Dictionary = summary_dict[pair_label]
+                result["adj_exist:%s" % pair_label] = 1 if summary.get("exist", false) else 0
+        return result
+    if typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog: Dictionary = prog
+        result["floors"] = dict_prog.get("floors", 1)
+        result["bedrooms"] = dict_prog.get("bedrooms", dict_prog.get("room_counts", {}).get("Bedroom", 0))
+        result["bathrooms"] = dict_prog.get("bathrooms", dict_prog.get("room_counts", {}).get("Bathroom", 0))
+        result["total_m2"] = float(dict_prog.get("total_m2", dict_prog.get("total_sqft", 0.0)))
+        result["total_m2_bin"] = dict_prog.get("total_m2_bin", dict_prog.get("total_sqft_bin", -1))
+        var fp_dict := dict_prog.get("footprint", {})
+        if fp_dict is Dictionary:
+            result["footprint"] = {"w": float(fp_dict.get("w", 0.0)), "d": float(fp_dict.get("d", 0.0))}
+        else:
+            result["footprint"] = {"w": 0.0, "d": 0.0}
+        result["footprint_w_bin"] = dict_prog.get("footprint_w_bin", -1)
+        result["footprint_d_bin"] = dict_prog.get("footprint_d_bin", -1)
+        result["footprint_bin"] = dict_prog.get("footprint_bin", -1)
+        result["footprint_bin_pair"] = dict_prog.get("footprint_bin_pair", Vector2i(dict_prog.get("footprint_w_bin", -1), dict_prog.get("footprint_d_bin", -1)))
+        result["room_counts"] = dict_prog.get("room_counts", {})
+        result["room_exists"] = dict_prog.get("room_exists", {})
+        result["room_count_bins"] = dict_prog.get("room_count_bins", {})
+        var rooms_out_dict: Array = []
+        for room in dict_prog.get("rooms", []):
+            if room is Dictionary:
+                rooms_out_dict.append(room.duplicate(true))
+            else:
+                rooms_out_dict.append(room)
+        result["rooms"] = rooms_out_dict
+        var adj_out_dict: Array = []
+        for adj in dict_prog.get("adj_pairs", []):
+            if adj is Dictionary:
+                adj_out_dict.append(adj.duplicate(true))
+            else:
+                adj_out_dict.append(adj)
+        result["adj_pairs"] = adj_out_dict
+        var summary_dict_any = dict_prog.get("adj_summary", {})
+        if summary_dict_any is Dictionary:
+            var summary_dict: Dictionary = summary_dict_any
+            for pair_label in summary_dict.keys():
+                var summary: Dictionary = summary_dict[pair_label]
+                result["adj_exist:%s" % pair_label] = 1 if summary.get("exist", false) else 0
+        var counts_dict_any = dict_prog.get("room_counts", {})
+        if counts_dict_any is Dictionary:
+            var counts_dict: Dictionary = counts_dict_any
+            for room_type in counts_dict.keys():
+                result["count_%s" % room_type] = int(counts_dict[room_type])
+        var exists_dict_any = dict_prog.get("room_exists", {})
+        if exists_dict_any is Dictionary:
+            var exists_dict: Dictionary = exists_dict_any
+            for exists_key in exists_dict.keys():
+                result[exists_key] = exists_dict[exists_key]
+        return result
+    return result
+
+static func _build_schema(programs: Array, edges: Dictionary) -> Dictionary:
+    var room_types := {}
+    var count_max := {}
+    var adj_labels := {}
+
+    for prog in programs:
+        if typeof(prog) != TYPE_DICTIONARY:
+            continue
+        var dict_prog: Dictionary = prog
+        var counts: Dictionary = dict_prog.get("room_counts", {})
+        for t in counts.keys():
+            room_types[t] = true
+            var c := int(counts[t])
+            var prev := int(count_max.get(t, 0))
+            if c > prev:
+                count_max[t] = c
+        for pair in dict_prog.get("adj_pairs", []):
+            if pair is Dictionary:
+                var label := String(pair.get("pair", ""))
+                if label != "":
+                    adj_labels[label] = true
+        var summary_variant := dict_prog.get("adj_summary", {})
+        if summary_variant is Dictionary:
+            var summary_dict: Dictionary = summary_variant
+            for label in summary_dict.keys():
+                if String(label) != "":
+                    adj_labels[String(label)] = true
+
+    var room_type_list: Array = room_types.keys()
+    room_type_list.sort()
+    var adj_list: Array = adj_labels.keys()
+    adj_list.sort()
+
+    var schema := {
+        "total_m2_edges": edges.get("total_m2_edges", PackedFloat64Array()),
+        "footprint_w_edges": edges.get("footprint_w_edges", PackedFloat64Array()),
+        "footprint_d_edges": edges.get("footprint_d_edges", PackedFloat64Array()),
+        "room_area_edges": edges.get("room_area_edges", PackedFloat64Array()),
+        "aspect_edges": edges.get("aspect_edges", PackedFloat64Array()),
+        "room_types": room_type_list,
+        "room_type_labels": room_type_list,
+        "adj_pairs": adj_list,
+        "adj_pair_labels": adj_list,
+        "count_max_by_type": count_max,
+        "adj_type_labels": [],
+        "exist_labels": [0, 1],
+        "area_labels": {},
+        "aspect_labels": {},
+    }
+    schema["adj_pairs_count"] = adj_list.size()
+    var bin_edges_dict := {
+        "total_sqft": schema.get("total_m2_edges", PackedFloat64Array()),
+        "width": schema.get("footprint_w_edges", PackedFloat64Array()),
+        "depth": schema.get("footprint_d_edges", PackedFloat64Array()),
+        "area": schema.get("room_area_edges", PackedFloat64Array()),
+        "aspect": schema.get("aspect_edges", PackedFloat64Array()),
+    }
+    schema["bin_edges"] = bin_edges_dict
+    var w_bins_count := 1
+    var d_bins_count := 1
+    var w_edges_variant := schema.get("footprint_w_edges", PackedFloat64Array())
+    if w_edges_variant is PackedFloat64Array:
+        w_bins_count = (w_edges_variant as PackedFloat64Array).size() + 1
+    var d_edges_variant := schema.get("footprint_d_edges", PackedFloat64Array())
+    if d_edges_variant is PackedFloat64Array:
+        d_bins_count = (d_edges_variant as PackedFloat64Array).size() + 1
+    schema["footprint_w_bin_count"] = w_bins_count
+    schema["footprint_d_bin_count"] = d_bins_count
+    schema["footprint_bin_count"] = w_bins_count * d_bins_count
+
+    var area_edges: PackedFloat64Array = schema["room_area_edges"]
+    var aspect_edges: PackedFloat64Array = schema["aspect_edges"]
+    for t in room_type_list:
+        schema["area_labels"][t] = _labels_from_edges("%s_area" % t, area_edges)
+        schema["aspect_labels"][t] = _labels_from_edges("%s_aspect" % t, aspect_edges)
+
+    return schema
+static func save_binned_corpus(path: String, binning: Dictionary) -> void:
+    var payload := {
+        "schema": binning.get("schema", {}),
+        "instances": [],
+    }
+    var instances: Array = binning.get("instances", [])
+    for prog in instances:
+        if typeof(prog) == TYPE_DICTIONARY:
+            payload["instances"].append(prog)
+        else:
+            payload["instances"].append(_program_to_dict(prog))
+    var file := FileAccess.open(path, FileAccess.WRITE)
+    if file:
+        file.store_string(JSON.stringify(payload, "    "))
+        file.close()
+
+static func _prog_total_m2(prog) -> float:
+    if prog == null:
+        return 0.0
+    var v: Variant = null
+    if typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog: Dictionary = prog
+        v = dict_prog.get("total_m2")
+        if v == null:
+            v = dict_prog.get("total_sqft")
+    else:
+        v = prog.get("total_m2")
+        if v == null:
+            v = prog.get("total_sqft")
+    if v == null:
+        v = 0.0
+    return float(v)
+
+static func _prog_footprint(prog) -> Vector2:
+    if prog == null:
+        return Vector2.ZERO
+    var fp_val: Variant = null
+    if typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog: Dictionary = prog
+        fp_val = dict_prog.get("footprint")
+    else:
+        fp_val = prog.get("footprint")
+    if fp_val is Vector2i:
+        var vi: Vector2i = fp_val
+        return Vector2(float(vi.x), float(vi.y))
+    if fp_val is Vector2:
+        return fp_val
+    var width := 0.0
+    var depth := 0.0
+    if typeof(prog) == TYPE_DICTIONARY:
+        var dw := (prog as Dictionary).get("footprint_w")
+        var dd := (prog as Dictionary).get("footprint_d")
+        if dw != null:
+            width = float(dw)
+        if dd != null:
+            depth = float(dd)
+    else:
+        var w_val: float = 0.0
+        var w_variant: Variant = prog.get("footprint_w")
+        if w_variant != null:
+            w_val = float(w_variant)
+        elif prog.footprint is Vector2i:
+            w_val = float((prog.footprint as Vector2i).x)
+        elif prog.footprint is Vector2:
+            w_val = (prog.footprint as Vector2).x
+
+        var d_val: float = 0.0
+        var d_variant: Variant = prog.get("footprint_d")
+        if d_variant != null:
+            d_val = float(d_variant)
+        elif prog.footprint is Vector2i:
+            d_val = float((prog.footprint as Vector2i).y)
+        elif prog.footprint is Vector2:
+            d_val = (prog.footprint as Vector2).y
+
+        width = w_val
+        depth = d_val
+    return Vector2(width, depth)
+
+
+static func _prog_rooms_list(prog) -> Array:
+    if prog is ProgramInstance:
+        return prog.rooms
+    if typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog: Dictionary = prog
+        var arr = dict_prog.get("rooms")
+        if arr is Array:
+            return arr
+        return []
+    return []
+
+static func _prog_adj_pairs_list(prog) -> Array:
+    if prog is ProgramInstance:
+        return prog.adj_pairs
+    if typeof(prog) == TYPE_DICTIONARY:
+        var dict_prog: Dictionary = prog
+        var arr = dict_prog.get("adj_pairs")
+        if arr is Array:
+            return arr
+        return []
+    return []
+static func _room_area_m2(room: Dictionary) -> float:
+    if room.has("area_m2"):
+        return float(room["area_m2"])
+    if room.has("area"):
+        return float(room["area"])
+    if room.has("rect"):
+        var rect_val = room["rect"]
+        if rect_val is Rect2:
+            var rect: Rect2 = rect_val
+            return max(0.0, rect.size.x * rect.size.y)
+        if rect_val is Dictionary:
+            var w := float(rect_val.get("w", rect_val.get("size", Vector2.ZERO).x))
+            var h := float(rect_val.get("h", rect_val.get("size", Vector2.ZERO).y))
+            return max(0.0, w * h)
+    if room.has("size"):
+        var size_val = room["size"]
+        if size_val is Vector2:
+            var sz: Vector2 = size_val
+            return max(0.0, sz.x * sz.y)
+        if size_val is Vector2i:
+            var szi: Vector2i = size_val
+            return max(0.0, float(szi.x) * float(szi.y))
+    return 0.0
+
+static func _room_aspect(room: Dictionary) -> float:
+    if room.has("aspect"):
+        return max(1.0, float(room["aspect"]))
+    var w := 0.0
+    var h := 0.0
+    if room.has("rect"):
+        var rect_val = room["rect"]
+        if rect_val is Rect2:
+            var rect: Rect2 = rect_val
+            w = rect.size.x
+            h = rect.size.y
+        elif rect_val is Dictionary:
+            w = float(rect_val.get("w", rect_val.get("size", Vector2.ZERO).x))
+            h = float(rect_val.get("h", rect_val.get("size", Vector2.ZERO).y))
+    elif room.has("size"):
+        var size_val = room["size"]
+        if size_val is Vector2:
+            var sz: Vector2 = size_val
+            w = sz.x
+            h = sz.y
+        elif size_val is Vector2i:
+            var szi: Vector2i = size_val
+            w = float(szi.x)
+            h = float(szi.y)
+    w = max(w, 0.0001)
+    h = max(h, 0.0001)
+    var major := max(w, h)
+    var minor := min(w, h)
+    return max(1.0, major / minor)
+
+static func _collect_total_m2(instances: Array) -> Array:
+    var out: Array = []
+    for prog in instances:
+        out.append(_prog_total_m2(prog))
+    return out
+
+static func _collect_foot_dim(instances: Array, axis: String) -> Array:
+    var out: Array = []
+    for prog in instances:
+        var fp := _prog_footprint(prog)
+        out.append(fp.x if axis == "w" else fp.y)
+    return out
+
+static func _collect_room_area(instances: Array) -> Array:
+    var out: Array = []
+    for prog in instances:
+        var rooms := _prog_rooms_list(prog)
+        for room in rooms:
+            if room is Dictionary:
+                out.append(_room_area_m2(room))
+    return out
+
+static func _collect_room_aspect(instances: Array) -> Array:
+    var out: Array = []
+    for prog in instances:
+        var rooms := _prog_rooms_list(prog)
+        for room in rooms:
+            if room is Dictionary:
+                out.append(_room_aspect(room))
+    return out
+
+static func _labels_from_edges(name: String, edges: PackedFloat64Array) -> Array:
+    if edges.is_empty():
+        return ["%s_any" % name]
+    var labels: Array = []
+    var previous := float(edges[0])
+    labels.append("%s<=%.2f" % [name, float(edges[0])])
+    for i in range(1, edges.size()):
+        var upper := float(edges[i])
+        labels.append("%.2f<%s<=%.2f" % [previous, name, upper])
+        previous = upper
+    labels.append("%s>%.2f" % [name, float(edges[edges.size() - 1])])
+    return labels
+static func _edge_count(value) -> int:
+    if value is PackedFloat64Array:
+        return (value as PackedFloat64Array).size()
+    if value is Array:
+        return (value as Array).size()
+    return 0
+
+static func _bin_index(value: float, edges: PackedFloat64Array) -> int:
+    for i in range(edges.size()):
+        if value < edges[i]:
+            return i
+    return edges.size()
+
+static func _quantile_edges(values: Array, bins: int) -> PackedFloat64Array:
+    var result := PackedFloat64Array()
+    if values.is_empty() or bins <= 1:
+        return result
+    var sorted_vals := values.duplicate()
+    sorted_vals.sort()
+    for b in range(1, bins):
+        var q := float(b) / float(bins)
+        var idx := clamp(int(round(q * (sorted_vals.size() - 1))), 0, sorted_vals.size() - 1)
+        result.append(float(sorted_vals[idx]))
+    return result

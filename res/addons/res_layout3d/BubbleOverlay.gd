@@ -3,13 +3,41 @@ class_name BubbleOverlay
 
 const GeomUtils := preload("res://addons/res_layout3d/GeomUtils.gd")
 
+@export var current_floor: int = 0
+@export var show_privacy := true
+@export var show_labels := true
+@export var show_edges := true
+
 var footprint: Rect2 = Rect2()
 var rooms := {}
 var edges: Array = []
 var doors := {}
 
+var _bubble_mode := false
+var _view_scale: float = 1.0
+var _view_offset: Vector2 = Vector2.ZERO
+
+static func _privacy_color(pr: int) -> Color:
+	match pr:
+		ArchitecturalProgram.Privacy.PUBLIC:
+			return Color.hex(0x46c37aff)
+		ArchitecturalProgram.Privacy.SEMI:
+			return Color.hex(0xffc857ff)
+		_:
+			return Color.hex(0xe04f5aff)
+
+static func _default_privacy(label: String) -> int:
+	var s := label.to_lower()
+	if s in ["foyer", "entry", "living", "great room", "dining", "kitchen", "family"]:
+		return ArchitecturalProgram.Privacy.PUBLIC
+	if s in ["hall", "corridor", "study", "office", "laundry", "mudroom", "loft"]:
+		return ArchitecturalProgram.Privacy.SEMI
+	return ArchitecturalProgram.Privacy.PRIVATE
+
 func update_display(program: ArchitecturalProgram, state: Dictionary) -> void:
-	if program == null or state.is_empty():
+	if state == null:
+		state = {}
+	if program == null and state.is_empty():
 		footprint = Rect2()
 		rooms = {}
 		edges = []
@@ -17,23 +45,132 @@ func update_display(program: ArchitecturalProgram, state: Dictionary) -> void:
 		queue_redraw()
 		return
 
-	footprint = state.get("outer", Rect2())
-	rooms = {}
+	if state.has("floor"):
+		current_floor = int(state["floor"])
+	if state.has("show_privacy"):
+		show_privacy = bool(state["show_privacy"])
+	if state.has("show_labels"):
+		show_labels = bool(state["show_labels"])
+	if state.has("show_edges"):
+		show_edges = bool(state["show_edges"])
+
 	var state_rooms: Dictionary = state.get("rooms", {})
-	for id in state_rooms.keys():
-		var rd: Dictionary = state_rooms[id]
-		rooms[id] = {
-			"rect": rd.get("rect", Rect2()),
-			"color": rd.get("color", Color(0.3, 0.6, 0.9, 0.8)),
-		}
-	edges = program.edges.duplicate(true)
-	doors = state.get("doors", {})
+	var has_rect := false
+	for key in state_rooms.keys():
+		var rd = state_rooms[key]
+		if rd is Dictionary and rd.has("rect"):
+			has_rect = true
+			break
+
+	if has_rect:
+		_bubble_mode = false
+		footprint = state.get("outer", Rect2())
+		rooms = {}
+		for id in state_rooms.keys():
+			var rd: Dictionary = state_rooms[id]
+			rooms[id] = {
+				"rect": rd.get("rect", Rect2()),
+				"color": rd.get("color", Color(0.3, 0.6, 0.9, 0.8)),
+				"type": rd.get("type", id)
+			}
+			edges = program.edges.duplicate(true) if program != null else []
+		doors = state.get("doors", {})
+	else:
+		_bubble_mode = true
+		doors = {}
+		var fp_vec := Vector2.ZERO
+		if program != null:
+			var fp_i: Vector2i = program.footprint_m
+			fp_vec = Vector2(fp_i.x, fp_i.y)
+		if state.has("outer") and fp_vec == Vector2.ZERO:
+			var st_outer: Rect2 = state.get("outer", Rect2())
+			fp_vec = st_outer.size
+		footprint = Rect2(Vector2.ZERO, fp_vec)
+		rooms = {}
+		edges = []
+		if program != null:
+			for room_def in program.rooms:
+				var rdict: Dictionary = room_def
+				var rid := String(rdict.get("id", ""))
+				if rid == "":
+					continue
+				var floor := int(rdict.get("floor", 0))
+				if floor != current_floor:
+					continue
+				rooms[rid] = rdict.duplicate(true)
+			for edge_def in program.edges:
+				var a_id := String(edge_def.get("a_id", ""))
+				var b_id := String(edge_def.get("b_id", ""))
+				if rooms.has(a_id) and rooms.has(b_id):
+					edges.append(edge_def)
 	queue_redraw()
 
 func _draw() -> void:
-	if footprint.size == Vector2.ZERO or rooms.is_empty():
+	if _bubble_mode:
+		_draw_bubble()
+	else:
+		_draw_partition()
+
+func _draw_bubble() -> void:
+	if rooms.is_empty():
+		return
+	var base_rect := footprint
+	if base_rect.size == Vector2.ZERO:
+		base_rect = _bubble_bounds()
+	if base_rect.size == Vector2.ZERO:
+		return
+	var padding: float = 20.0
+	var view_size: Vector2 = get_size()
+	var available := Vector2(max(view_size.x - padding * 2.0, 1.0), max(view_size.y - padding * 2.0, 1.0))
+	var scale := min(available.x / max(base_rect.size.x, 0.001), available.y / max(base_rect.size.y, 0.001))
+	var offset: Vector2 = (view_size - base_rect.size * scale) * 0.5 - base_rect.position * scale
+	_view_scale = scale
+	_view_offset = offset
+
+	var bg_rect := Rect2(base_rect.position * scale + offset, base_rect.size * scale)
+	draw_rect(bg_rect, Color(0.05, 0.05, 0.08, 0.6), true)
+	draw_rect(bg_rect, Color(0.3, 0.4, 0.6, 0.8), false, 2.0)
+
+	for id in rooms.keys():
+		var room_dict: Dictionary = rooms[id]
+		var room_rect := _bubble_rect(room_dict)
+		var view_rect := _to_view(room_rect)
+		var base_col := Color(0.3, 0.6, 0.9, 1.0)
+		if show_privacy:
+			base_col = _privacy_color(int(room_dict.get("privacy", _default_privacy(String(room_dict.get("type", id))))))
+		var fill_col := base_col
+		fill_col.a = 0.55
+		draw_rect(view_rect, fill_col, true)
+		draw_rect(view_rect, base_col.darkened(0.25), false, 2.0)
+		if show_labels:
+			var label := String(room_dict.get("type", id))
+			var font := get_theme_default_font()
+			if font == null:
+				font = ThemeDB.fallback_font
+			var font_size := get_theme_default_font_size()
+			if font_size <= 0:
+				font_size = 14
+			draw_string(font, view_rect.get_center(), label, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, Color.WHITE)
+
+	if not show_edges:
 		return
 
+	for edge_def in edges:
+		var edge: Dictionary = edge_def
+		var a_id := String(edge.get("a_id", ""))
+		var b_id := String(edge.get("b_id", ""))
+		if not rooms.has(a_id) or not rooms.has(b_id):
+			continue
+		var pa := _to_view(_bubble_rect(rooms[a_id])).get_center()
+		var pb := _to_view(_bubble_rect(rooms[b_id])).get_center()
+		var kind := String(edge.get("kind", "door"))
+		var color := Color.hex(0x99e2ffff) if kind == "open" else Color.hex(0xffffffaa)
+		var width := 3.0 if kind == "open" else 1.5
+		draw_line(pa, pb, color, width)
+
+func _draw_partition() -> void:
+	if footprint.size == Vector2.ZERO or rooms.is_empty():
+		return
 	var padding: float = 20.0
 	var view_size: Vector2 = get_size()
 	var available: Vector2 = Vector2(max(view_size.x - padding * 2.0, 1.0), max(view_size.y - padding * 2.0, 1.0))
@@ -87,6 +224,26 @@ func _draw() -> void:
 				var mapped_point: Vector2 = offset + point * scale
 				var size: Vector2 = Vector2(6, 6)
 				draw_rect(Rect2(mapped_point - size * 0.5, size), door_color, true)
+
+func _bubble_rect(data: Dictionary) -> Rect2:
+	var pos := Vector2(float(data.get("x", 0.0)), float(data.get("y", 0.0)))
+	var size := Vector2(float(data.get("w", 2.0)), float(data.get("h", 2.0)))
+	return Rect2(pos, size)
+
+func _bubble_bounds() -> Rect2:
+	var first := true
+	var rect := Rect2()
+	for id in rooms.keys():
+		var r := _bubble_rect(rooms[id])
+		if first:
+			rect = r
+			first = false
+		else:
+			rect = rect.merge(r)
+	return rect
+
+func _to_view(rect: Rect2) -> Rect2:
+	return Rect2(_view_offset + rect.position * _view_scale, rect.size * _view_scale)
 
 func _draw_ellipse(center: Vector2, radii: Vector2, color: Color) -> void:
 	var steps := 40
