@@ -1,9 +1,0 @@
-{
-  "rooms": [
-    {"label": "Living Room", "polygon": [[0,0],[6,0],[6,4],[0,4]]},
-    {"label": "Kitchen", "polygon": [[6,0],[9,0],[9,3],[6,3]]},
-    {"label": "Bedroom", "polygon": [[0,4],[4,4],[4,8],[0,8]]},
-    {"label": "Bathroom", "polygon": [[4,4],[6,4],[6,6],[4,6]]},
-    {"label": "Hall", "polygon": [[4,6],[6,6],[6,8],[4,8]]}
-  ]
-}
