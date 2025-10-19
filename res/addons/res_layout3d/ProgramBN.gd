@@ -475,7 +475,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 		sampled["Hall_exists"] = 1
 		hall_exists = true
 
-	func add_room(id: String, room_type: String, floor_num: int, tmpl: Dictionary) -> void:
+	var add_room := func(id: String, room_type: String, floor_num: int, tmpl: Dictionary) -> void:
 		rooms.append({
 			"id": id,
 			"type": room_type,
@@ -533,18 +533,22 @@ func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: i
 	var edges: Array[Dictionary] = []
 	var added := {}
 
-	func add_edge(a_id: String, b_id: String, kind: String) -> void:
+	var add_edge := func(a_id: String, b_id: String, kind: String) -> void:
 		if a_id == "" or b_id == "" or a_id == b_id:
 			return
-		var key := a_id < b_id ? "%s|%s" % [a_id, b_id] : "%s|%s" % [b_id, a_id]
+		var key := "%s|%s" % [a_id, b_id]
+		if a_id >= b_id:
+			key = "%s|%s" % [b_id, a_id]
 		if added.has(key):
 			return
 		edges.append({"a_id": a_id, "b_id": b_id, "type": kind, "kind": kind})
 		added[key] = true
 
-	func edge_kind_for(a_type: String, b_type: String) -> String:
+	var edge_kind_for := func(a_type: String, b_type: String) -> String:
 		var open_types := {"Living": true, "Dining": true, "Kitchen": true}
-		return (open_types.has(a_type) and open_types.has(b_type)) ? "open" : "door"
+		if open_types.has(a_type) and open_types.has(b_type):
+			return "open"
+		return "door"
 
 	var ids_by_type := {}
 	for room_dict in rooms:
@@ -556,7 +560,7 @@ func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: i
 			ids_by_type[room_type] = []
 		(ids_by_type[room_type] as Array).append(room_id)
 
-	func first_id(room_type: String) -> String:
+	var first_id := func(room_type: String) -> String:
 		if ids_by_type.has(room_type):
 			var arr: Array = ids_by_type[room_type] as Array
 			if not arr.is_empty():
