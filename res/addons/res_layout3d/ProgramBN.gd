@@ -69,6 +69,36 @@ func _rebuild_schema_edges(schema: Dictionary) -> void:
 		if parts.size() >= 2:
 			edges.append({"a": parts[0], "b": parts[1]})
 	schema_edge_pairs = edges
+
+func _append_room(rooms: Array, id: String, room_type: String, floor_num: int, tmpl: Dictionary) -> void:
+	rooms.append({
+		"id": id,
+		"type": room_type,
+		"floor": floor_num,
+		"needs_window": bool(tmpl.get("window", true)),
+		"area_pdf": {"mean": float(tmpl.get("area_mean", 8.0)), "sigma": float(tmpl.get("area_sigma", 2.0))},
+		"aspect_pdf": {"mean": float(tmpl.get("aspect_mean", 1.2)), "sigma": float(tmpl.get("aspect_sigma", 0.2))}
+	})
+
+func _edge_kind_for(a_type: String, b_type: String) -> String:
+	var open_types := {"Living": true, "Dining": true, "Kitchen": true}
+	return "open" if open_types.has(a_type) and open_types.has(b_type) else "door"
+
+func _first_room_id(ids_by_type: Dictionary, room_type: String) -> String:
+	var arr: Array = ids_by_type.get(room_type, [])
+	return String(arr[0]) if arr.size() > 0 else ""
+
+func _append_edge(edges: Array, added: Dictionary, a_id: String, b_id: String, kind: String) -> void:
+	if a_id == "" or b_id == "" or a_id == b_id:
+		return
+	var key := "%s|%s" % [a_id, b_id]
+	if a_id >= b_id:
+		key = "%s|%s" % [b_id, a_id]
+	if added.has(key):
+		return
+	edges.append({"a_id": a_id, "b_id": b_id, "type": kind, "kind": kind})
+	added[key] = true
+
 func _rng() -> RandomNumberGenerator:
 	return rng_ctx.rng if rng_ctx != null else RandomNumberGenerator.new()
 
@@ -468,22 +498,11 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 		"Stair": {"area_mean": 4.0, "area_sigma": 1.0, "aspect_mean": 2.5, "aspect_sigma": 0.5, "window": false},
 		"Utility": {"area_mean": 3.5, "area_sigma": 0.8, "aspect_mean": 1.0, "aspect_sigma": 0.1, "window": false}
 	}
-
 	var force_hall := beds >= 3 or floors > 1
 	var hall_exists := _exists_flag(sampled, "Hall")
 	if force_hall and not hall_exists:
 		sampled["Hall_exists"] = 1
 		hall_exists = true
-
-	var add_room := func(id: String, room_type: String, floor_num: int, tmpl: Dictionary) -> void:
-		rooms.append({
-			"id": id,
-			"type": room_type,
-			"floor": floor_num,
-			"needs_window": tmpl.get("window", true),
-			"area_pdf": {"mean": tmpl.get("area_mean", 8.0), "sigma": tmpl.get("area_sigma", 2.0)},
-			"aspect_pdf": {"mean": tmpl.get("aspect_mean", 1.2), "sigma": tmpl.get("aspect_sigma", 0.2)}
-		})
 
 	for node_name in nodes.keys():
 		var key := String(node_name)
@@ -491,7 +510,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 			continue
 		if int(sampled.get(node_name, 0)) == 0:
 			continue
-		var room_type := key.left(key.length() - "_exists".length())
+		var room_type: String = key.left(key.length() - "_exists".length())
 		var tmpl: Dictionary = room_templates.get(room_type, room_templates.get("Utility"))
 		match room_type:
 			"Bedroom":
@@ -499,28 +518,28 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 					var floor_num := 0
 					if floors > 1 and i > 0:
 						floor_num = 1
-					add_room("bed_%d" % (i + 1), "Bedroom", floor_num, tmpl)
+					_append_room(rooms, "bed_%d" % (i + 1), "Bedroom", floor_num, tmpl)
 			"Bathroom":
 				for i in range(baths):
 					var floor_num := 0
 					if floors > 1 and i > 0:
 						floor_num = 1
-					add_room("bath_%d" % (i + 1), "Bathroom", floor_num, tmpl)
+					_append_room(rooms, "bath_%d" % (i + 1), "Bathroom", floor_num, tmpl)
 			"Hall":
 				var hall_floor := 0 if floors == 1 else 1
-				add_room("hall", "Hall", hall_floor, tmpl)
+				_append_room(rooms, "hall", "Hall", hall_floor, tmpl)
 			"Stair":
 				if floors > 1:
 					for f in range(floors):
-						add_room("stair_%d" % f, "Stair", f, tmpl)
+						_append_room(rooms, "stair_%d" % f, "Stair", f, tmpl)
 			"Entry":
-				add_room("entry", "Entry", 0, tmpl)
+				_append_room(rooms, "entry", "Entry", 0, tmpl)
 			"Living":
-				add_room("living", "Living", 0, tmpl)
+				_append_room(rooms, "living", "Living", 0, tmpl)
 			"Kitchen":
-				add_room("kitchen", "Kitchen", 0, tmpl)
+				_append_room(rooms, "kitchen", "Kitchen", 0, tmpl)
 			_:
-				add_room(room_type.to_lower(), room_type, 0, tmpl)
+				_append_room(rooms, room_type.to_lower(), room_type, 0, tmpl)
 
 	program.rooms = rooms
 	program.edges = _build_program_edges(sampled, rooms, beds, baths, floors)
@@ -533,23 +552,6 @@ func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: i
 	var edges: Array[Dictionary] = []
 	var added := {}
 
-	var add_edge := func(a_id: String, b_id: String, kind: String) -> void:
-		if a_id == "" or b_id == "" or a_id == b_id:
-			return
-		var key := "%s|%s" % [a_id, b_id]
-		if a_id >= b_id:
-			key = "%s|%s" % [b_id, a_id]
-		if added.has(key):
-			return
-		edges.append({"a_id": a_id, "b_id": b_id, "type": kind, "kind": kind})
-		added[key] = true
-
-	var edge_kind_for := func(a_type: String, b_type: String) -> String:
-		var open_types := {"Living": true, "Dining": true, "Kitchen": true}
-		if open_types.has(a_type) and open_types.has(b_type):
-			return "open"
-		return "door"
-
 	var ids_by_type := {}
 	for room_dict in rooms:
 		var room_type := String(room_dict.get("type", ""))
@@ -560,19 +562,15 @@ func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: i
 			ids_by_type[room_type] = []
 		(ids_by_type[room_type] as Array).append(room_id)
 
-	var first_id := func(room_type: String) -> String:
-		if ids_by_type.has(room_type):
-			var arr: Array = ids_by_type[room_type] as Array
-			if not arr.is_empty():
-				return arr[0]
-		return ""
+	var entry_id: String = _first_room_id(ids_by_type, "Entry")
+	var living_id: String = _first_room_id(ids_by_type, "Living")
+	var kitchen_id: String = _first_room_id(ids_by_type, "Kitchen")
+	_append_edge(edges, added, entry_id, living_id, "door")
+	_append_edge(edges, added, living_id, kitchen_id, "open")
 
-	add_edge(first_id("Entry"), first_id("Living"), "door")
-
-	if floors > 1 and ids_by_type.has("Stair"):
-		var stair_ids: Array = ids_by_type["Stair"] as Array
-		if stair_ids.size() >= 2:
-			add_edge(stair_ids[0], stair_ids[1], "door")
+	if floors > 1:
+		_append_edge(edges, added, living_id, "stair_0", "door")
+		_append_edge(edges, added, _first_room_id(ids_by_type, "Hall"), "stair_1", "door")
 
 	for key in sampled.keys():
 		var key_str := String(key)
@@ -593,17 +591,18 @@ func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: i
 		if ids_a.is_empty() or ids_b.is_empty():
 			continue
 		var count := max(ids_a.size(), ids_b.size())
-		var edge_kind := edge_kind_for(type_a, type_b)
+		var kind: String = _edge_kind_for(type_a, type_b)
 		for i in range(count):
-			var a_id := ids_a[min(i, ids_a.size() - 1)]
-			var b_id := ids_b[i % ids_b.size()]
-			add_edge(a_id, b_id, edge_kind)
+			var a_id: String = String(ids_a[min(i, ids_a.size() - 1)])
+			var b_id: String = String(ids_b[i % ids_b.size()])
+			_append_edge(edges, added, a_id, b_id, kind)
 
-	if ids_by_type.has("Bedroom") and ids_by_type.has("Bathroom"):
-		var first_bed := first_id("Bedroom")
-		var bath_ids: Array = ids_by_type["Bathroom"] as Array
+	var bedroom_ids: Array = ids_by_type.get("Bedroom", []) as Array
+	var bath_ids: Array = ids_by_type.get("Bathroom", []) as Array
+	if not bedroom_ids.is_empty() and not bath_ids.is_empty():
+		var first_bed: String = _first_room_id(ids_by_type, "Bedroom")
 		for bath_id in bath_ids:
-			add_edge(first_bed, bath_id, "door")
+			_append_edge(edges, added, first_bed, String(bath_id), "door")
 
 	return edges
 
