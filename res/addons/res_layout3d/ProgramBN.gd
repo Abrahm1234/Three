@@ -84,6 +84,9 @@ func _edge_kind_for(a_type: String, b_type: String) -> String:
 	var open_types := {"Living": true, "Dining": true, "Kitchen": true}
 	return "open" if open_types.has(a_type) and open_types.has(b_type) else "door"
 
+func _pair_label(a_type: String, b_type: String) -> String:
+	return TrainingData._room_pair_label(a_type, b_type)
+
 func _first_room_id(ids_by_type: Dictionary, room_type: String) -> String:
 	var arr: Array = ids_by_type.get(room_type, [])
 	return String(arr[0]) if arr.size() > 0 else ""
@@ -572,18 +575,25 @@ func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: i
 		_append_edge(edges, added, living_id, "stair_0", "door")
 		_append_edge(edges, added, _first_room_id(ids_by_type, "Hall"), "stair_1", "door")
 
-	for key in sampled.keys():
-		var key_str := String(key)
-		if not key_str.begins_with("adj_exist:"):
-			continue
-		if int(sampled.get(key, 0)) <= 0:
-			continue
-		var label := key_str.substr("adj_exist:".length())
+	var pair_labels: Array = []
+	var pair_variant := schema_edges.get("adj_pair_labels", schema_edges.get("adj_pairs", []))
+	if pair_variant is PackedStringArray:
+		pair_labels = (pair_variant as PackedStringArray).to_array()
+	elif pair_variant is Array:
+		pair_labels = (pair_variant as Array).duplicate()
+
+	for label_variant in pair_labels:
+		var label := String(label_variant)
 		var parts := label.split("|", false)
 		if parts.size() < 2:
 			continue
-		var type_a := parts[0]
-		var type_b := parts[1]
+		var canonical := _pair_label(parts[0], parts[1])
+		var key := "adj_exist:" + canonical
+		if int(sampled.get(key, 0)) <= 0:
+			continue
+		var canonical_parts := canonical.split("|", false)
+		var type_a := canonical_parts[0]
+		var type_b := canonical_parts[1]
 		if not ids_by_type.has(type_a) or not ids_by_type.has(type_b):
 			continue
 		var ids_a: Array = ids_by_type[type_a] as Array
@@ -596,6 +606,12 @@ func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: i
 			var a_id: String = String(ids_a[min(i, ids_a.size() - 1)])
 			var b_id: String = String(ids_b[i % ids_b.size()])
 			_append_edge(edges, added, a_id, b_id, kind)
+
+	var hall_id: String = _first_room_id(ids_by_type, "Hall")
+	if entry_id != "" and hall_id != "":
+		_append_edge(edges, added, entry_id, hall_id, "door")
+	if hall_id != "" and living_id != "":
+		_append_edge(edges, added, hall_id, living_id, "door")
 
 	var bedroom_ids: Array = ids_by_type.get("Bedroom", []) as Array
 	var bath_ids: Array = ids_by_type.get("Bathroom", []) as Array
