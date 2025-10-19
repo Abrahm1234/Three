@@ -1,2 +1,9 @@
-{"id":"plan_0001","json":"export_json/plan_0001.json"}
-{"id":"plan_0002","json":"export_json/plan_0002.json"}
+{"id": "plan_00000", "json": "export_json/plan_00000.json", "rooms": 9, "w": 256.0, "h": 171.36, "label_hist": {"living": 1, "bedroom": 2, "bathroom": 2, "kitchen": 1, "balcony": 2, "storage": 1}}
+{"id": "plan_00001", "json": "export_json/plan_00001.json", "rooms": 12, "w": 256.0, "h": 238.98, "label_hist": {"living": 3, "bedroom": 3, "bathroom": 4, "kitchen": 1, "balcony": 1}}
+{"id": "plan_00002", "json": "export_json/plan_00002.json", "rooms": 8, "w": 249.56, "h": 282.63, "label_hist": {"living": 1, "bedroom": 2, "bathroom": 2, "kitchen": 1, "balcony": 2}}
+{"id": "plan_00003", "json": "export_json/plan_00003.json", "rooms": 10, "w": 256.0, "h": 249.66, "label_hist": {"living": 1, "bedroom": 3, "bathroom": 2, "kitchen": 1, "balcony": 3}}
+{"id": "plan_00004", "json": "export_json/plan_00004.json", "rooms": 11, "w": 256.0, "h": 196.36, "label_hist": {"living": 5, "bedroom": 1, "bathroom": 4, "kitchen": 1}}
+{"id": "plan_00005", "json": "export_json/plan_00005.json", "rooms": 8, "w": 256.0, "h": 270.89, "label_hist": {"living": 1, "bedroom": 2, "bathroom": 2, "kitchen": 1, "balcony": 2}}
+{"id": "plan_00006", "json": "export_json/plan_00006.json", "rooms": 10, "w": 281.76, "h": 256.0, "label_hist": {"living": 1, "bedroom": 3, "bathroom": 2, "kitchen": 1, "balcony": 3}}
+{"id": "plan_00007", "json": "export_json/plan_00007.json", "rooms": 12, "w": 256.0, "h": 251.56, "label_hist": {"living": 3, "bedroom": 3, "bathroom": 4, "kitchen": 1, "balcony": 1}}
+{"id": "plan_00008", "json": "export_json/plan_00008.json", "rooms": 7, "w": 870.5, "h": 545.5, "label_hist": {"living": 2, "bedroom": 2, "bathroom": 2, "kitchen": 1}}
