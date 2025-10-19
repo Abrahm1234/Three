@@ -475,13 +475,13 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 		sampled["Hall_exists"] = 1
 		hall_exists = true
 
-	for node_name in nodes.keys():
-		var node_key: String = String(node_name)
-		if not node_key.ends_with("_exists"):
-			continue
-		var room_type: String = node_key.left(node_key.length() - "_exists".length())
-		if int(sampled.get(node_name, 0)) == 0:
-			continue
+        for node_name in nodes.keys():
+                var node_key: String = String(node_name)
+                if not node_key.ends_with("_exists"):
+                        continue
+                var room_type: String = node_key.left(node_key.length() - "_exists".length())
+                if int(sampled.get(node_name, 0)) == 0:
+                        continue
 
 		var tmpl: Dictionary = room_templates.get(room_type, {
 			"area_mean": 8.0,
@@ -575,7 +575,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 				"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
 			})
 	program.rooms = rooms
-	program.edges = _build_program_edges(sampled, rooms, beds, baths, floors)
+        program.edges = _build_program_edges(sampled, rooms, beds, baths, floors)
 
 	if DEBUG_VERIFY:
 		print("[BN] program sample: rooms=%d edges=%d floors=%d" % [rooms.size(), program.edges.size(), floors])
@@ -583,55 +583,79 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 
 func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: int, floors: int) -> Array[Dictionary]:
 	var edges: Array[Dictionary] = []
+	var added := {}
 
-	if _adj_exist_value(sampled, "Kitchen|Living") > 0:
-		edges.append({"a_id": "living", "b_id": "kitchen", "type": "open", "kind": "open"})
+	func add_edge(a_id: String, b_id: String, kind: String) -> void:
+		if a_id == "" or b_id == "" or a_id == b_id:
+			return
+		var key := a_id < b_id ? "%s|%s" % [a_id, b_id] : "%s|%s" % [b_id, a_id]
+		if added.has(key):
+			return
+		edges.append({"a_id": a_id, "b_id": b_id, "type": kind, "kind": kind})
+		added[key] = true
 
-	edges.append({"a_id": "entry", "b_id": "living", "type": "door", "kind": "door"})
+	func edge_kind_for(a_type: String, b_type: String) -> String:
+		var open_types := {"Living": true, "Dining": true, "Kitchen": true}
+		return (open_types.has(a_type) and open_types.has(b_type)) ? "open" : "door"
 
-	var has_hall := rooms.any(func(r): return r.get("type", "") == "Hall")
-	if has_hall:
-		for i in range(beds):
-			var bed_id := "bed_%d" % (i + 1)
-			var anchor := "living" if i == 0 and beds > 1 else "hall"
-			edges.append({"a_id": anchor, "b_id": bed_id, "type": "door", "kind": "door"})
+	var ids_by_type := {}
+	for room_dict in rooms:
+		var room_type := String(room_dict.get("type", ""))
+		var room_id := String(room_dict.get("id", ""))
+		if room_type == "" or room_id == "":
+			continue
+		if not ids_by_type.has(room_type):
+			ids_by_type[room_type] = []
+		(ids_by_type[room_type] as Array).append(room_id)
 
-		if floors > 1:
-			edges.append({"a_id": "hall", "b_id": "stair_1", "type": "door", "kind": "door"})
-			edges.append({"a_id": "entry", "b_id": "stair_0", "type": "door", "kind": "door"})
-		else:
-			edges.append({"a_id": "entry", "b_id": "hall", "type": "door", "kind": "door"})
+	func first_id(room_type: String) -> String:
+		if ids_by_type.has(room_type) and not (ids_by_type[room_type] as Array).is_empty():
+			return (ids_by_type[room_type] as Array)[0]
+		return ""
 
-		for i in range(1, baths):
-			edges.append({"a_id": "hall", "b_id": "bath_%d" % (i + 1), "type": "door", "kind": "door"})
-	else:
-		for i in range(beds):
-			edges.append({"a_id": "living", "b_id": "bed_%d" % (i + 1), "type": "door", "kind": "door"})
+	add_edge.call(first_id.call("Entry"), first_id.call("Living"), "door")
 
-	if baths > 0:
-		edges.append({"a_id": "bed_1", "b_id": "bath_1", "type": "door", "kind": "door"})
+	if floors > 1:
+		var stair_ids := ids_by_type.get("Stair", [])
+		if stair_ids is Array and (stair_ids as Array).size() >= 2:
+			add_edge.call((stair_ids as Array)[0], (stair_ids as Array)[1], "door")
 
-	if _exists_flag(sampled, "Dining"):
-		edges.append({"a_id": "living", "b_id": "dining", "type": "open", "kind": "open"})
-		edges.append({"a_id": "dining", "b_id": "kitchen", "type": "open", "kind": "open"})
+	for key in sampled.keys():
+		var key_str := String(key)
+		if not key_str.begins_with("adj_exist:"):
+			continue
+		if int(sampled.get(key, 0)) <= 0:
+			continue
+		var label := key_str.substr("adj_exist:".length())
+		var parts := label.split("|", false)
+		if parts.size() < 2:
+			continue
+		var type_a := parts[0]
+		var type_b := parts[1]
+                if not ids_by_type.has(type_a) or not ids_by_type.has(type_b):
+                        continue
+                var ids_a_variant := ids_by_type[type_a]
+                var ids_b_variant := ids_by_type[type_b]
+                if ids_a_variant is not Array or ids_b_variant is not Array:
+                        continue
+                var ids_a: Array = ids_a_variant as Array
+                var ids_b: Array = ids_b_variant as Array
+                if ids_a.is_empty() or ids_b.is_empty():
+                        continue
+		var count := max(ids_a.size(), ids_b.size())
+		var edge_kind := edge_kind_for.call(type_a, type_b)
+		for i in range(count):
+			var a_id := ids_a[min(i, ids_a.size() - 1)]
+			var b_id := ids_b[i % ids_b.size()]
+			add_edge.call(a_id, b_id, edge_kind)
 
-	if _exists_flag(sampled, "Pantry"):
-		edges.append({"a_id": "kitchen", "b_id": "pantry", "type": "door", "kind": "door"})
-
-	if _exists_flag(sampled, "Laundry"):
-		edges.append({"a_id": "kitchen", "b_id": "laundry", "type": "door", "kind": "door"})
-
-	if _exists_flag(sampled, "Office") or _exists_flag(sampled, "Study"):
-		edges.append({"a_id": "entry", "b_id": "office", "type": "door", "kind": "door"})
-
-	if _exists_flag(sampled, "Garage"):
-		edges.append({"a_id": "entry", "b_id": "garage", "type": "door", "kind": "door"})
-
-	if _exists_flag(sampled, "Porch"):
-		edges.append({"a_id": "living", "b_id": "porch", "type": "door", "kind": "door"})
+	if ids_by_type.has("Bedroom") and ids_by_type.has("Bathroom"):
+		var first_bed := first_id.call("Bedroom")
+		var bath_ids: Array = ids_by_type["Bathroom"] as Array
+		for bath_id in bath_ids:
+			add_edge.call(first_bed, bath_id, "door")
 
 	return edges
-## Legacy sampling method (fallback)
 func _sample_legacy(req: Dictionary) -> ArchitecturalProgram:
 	var program := ArchitecturalProgram.new()
 	program.footprint_m = req.get("footprint", Vector2i(16, 12))
