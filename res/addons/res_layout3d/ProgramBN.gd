@@ -37,7 +37,7 @@ class BNNode:
 		return "|".join(parts)
 
 ## Network structure
-var nodes: Dictionary = {}  # name -> BNNode
+var nodes: Dictionary = {}	# name -> BNNode
 var training_data: TrainingData
 var rng_ctx: RandomCtx
 var schema_edges: Dictionary = {}
@@ -442,6 +442,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 	var beds := int(sampled.get("count_Bedroom", sampled.get("bedrooms", 3)))
 	var baths := int(sampled.get("count_Bathroom", sampled.get("bathrooms", 2)))
 	var floors := int(req.get("floors", 1))
+
 	var area_edges: PackedFloat64Array = schema_edges.get("total_m2_edges", PackedFloat64Array())
 	var requested_sqft := float(req.get("sq_m2", -1.0))
 	var sqft_bin := int(sampled.get("total_m2_bin", _bin_index_for_value(requested_sqft, area_edges) if requested_sqft >= 0.0 else 0))
@@ -463,7 +464,6 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 		"Laundry": {"area_mean": 4.5, "area_sigma": 1.0, "aspect_mean": 1.1, "aspect_sigma": 0.2, "window": false},
 		"Closet": {"area_mean": 2.5, "area_sigma": 0.6, "aspect_mean": 1.0, "aspect_sigma": 0.1, "window": false},
 		"Hall": {"area_mean": 8.0, "area_sigma": 2.0, "aspect_mean": 3.0, "aspect_sigma": 1.0, "window": false},
-		"Porch": {"area_mean": 7.0, "area_sigma": 1.5, "aspect_mean": 2.0, "aspect_sigma": 0.5, "window": false},
 		"Garage": {"area_mean": 20.0, "area_sigma": 4.0, "aspect_mean": 1.8, "aspect_sigma": 0.3, "window": false},
 		"Stair": {"area_mean": 4.0, "area_sigma": 1.0, "aspect_mean": 2.5, "aspect_sigma": 0.5, "window": false},
 		"Utility": {"area_mean": 3.5, "area_sigma": 0.8, "aspect_mean": 1.0, "aspect_sigma": 0.1, "window": false}
@@ -475,107 +475,55 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 		sampled["Hall_exists"] = 1
 		hall_exists = true
 
-        for node_name in nodes.keys():
-                var node_key: String = String(node_name)
-                if not node_key.ends_with("_exists"):
-                        continue
-                var room_type: String = node_key.left(node_key.length() - "_exists".length())
-                if int(sampled.get(node_name, 0)) == 0:
-                        continue
-
-		var tmpl: Dictionary = room_templates.get(room_type, {
-			"area_mean": 8.0,
-			"area_sigma": 2.0,
-			"aspect_mean": 1.2,
-			"aspect_sigma": 0.2,
-			"window": true
+	func add_room(id: String, room_type: String, floor_num: int, tmpl: Dictionary) -> void:
+		rooms.append({
+			"id": id,
+			"type": room_type,
+			"floor": floor_num,
+			"needs_window": tmpl.get("window", true),
+			"area_pdf": {"mean": tmpl.get("area_mean", 8.0), "sigma": tmpl.get("area_sigma", 2.0)},
+			"aspect_pdf": {"mean": tmpl.get("aspect_mean", 1.2), "sigma": tmpl.get("aspect_sigma", 0.2)}
 		})
 
-		if room_type == "Bedroom":
-			for i in range(beds):
-				var floor_num := 0
-				if floors > 1 and i > 0:
-					floor_num = 1
-				rooms.append({
-					"id": "bed_%d" % (i + 1),
-					"type": "Bedroom",
-					"floor": floor_num,
-					"needs_window": tmpl["window"],
-					"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
-					"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
-				})
-		elif room_type == "Bathroom":
-			for i in range(baths):
-				var floor_num := 0
-				if floors > 1 and i > 0:
-					floor_num = 1
-				rooms.append({
-					"id": "bath_%d" % (i + 1),
-					"type": "Bathroom",
-					"floor": floor_num,
-					"needs_window": tmpl["window"],
-					"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
-					"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
-				})
-		elif room_type == "Hall":
-			var hall_floor := 0 if floors == 1 else 1
-			rooms.append({
-				"id": "hall",
-				"type": "Hall",
-				"floor": hall_floor,
-				"needs_window": false,
-				"area_pdf": {"mean": 8.0, "sigma": 2.0},
-				"aspect_pdf": {"mean": 2.5, "sigma": 0.5}
-			})
-		elif room_type == "Stair":
-			if floors > 1:
-				for f in range(floors):
-					rooms.append({
-						"id": "stair_%d" % f,
-						"type": "Stair",
-						"floor": f,
-						"needs_window": false,
-						"area_pdf": {"mean": 4.0, "sigma": 1.0},
-						"aspect_pdf": {"mean": 2.5, "sigma": 0.5}
-					})
-		elif room_type == "Entry":
-			rooms.append({
-				"id": "entry",
-				"type": "Entry",
-				"floor": 0,
-				"needs_window": true,
-				"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
-				"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
-			})
-		elif room_type == "Living":
-			rooms.append({
-				"id": "living",
-				"type": "Living",
-				"floor": 0,
-				"needs_window": true,
-				"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
-				"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
-			})
-		elif room_type == "Kitchen":
-			rooms.append({
-				"id": "kitchen",
-				"type": "Kitchen",
-				"floor": 0,
-				"needs_window": true,
-				"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
-				"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
-			})
-		else:
-			rooms.append({
-				"id": room_type.to_lower(),
-				"type": room_type,
-				"floor": 0,
-				"needs_window": tmpl["window"],
-				"area_pdf": {"mean": tmpl["area_mean"], "sigma": tmpl["area_sigma"]},
-				"aspect_pdf": {"mean": tmpl["aspect_mean"], "sigma": tmpl["aspect_sigma"]}
-			})
+	for node_name in nodes.keys():
+		var key := String(node_name)
+		if not key.ends_with("_exists"):
+			continue
+		if int(sampled.get(node_name, 0)) == 0:
+			continue
+		var room_type := key.left(key.length() - "_exists".length())
+		var tmpl: Dictionary = room_templates.get(room_type, room_templates.get("Utility"))
+		match room_type:
+			"Bedroom":
+				for i in range(beds):
+					var floor_num := 0
+					if floors > 1 and i > 0:
+						floor_num = 1
+					add_room("bed_%d" % (i + 1), "Bedroom", floor_num, tmpl)
+			"Bathroom":
+				for i in range(baths):
+					var floor_num := 0
+					if floors > 1 and i > 0:
+						floor_num = 1
+					add_room("bath_%d" % (i + 1), "Bathroom", floor_num, tmpl)
+			"Hall":
+				var hall_floor := 0 if floors == 1 else 1
+				add_room("hall", "Hall", hall_floor, tmpl)
+			"Stair":
+				if floors > 1:
+					for f in range(floors):
+						add_room("stair_%d" % f, "Stair", f, tmpl)
+			"Entry":
+				add_room("entry", "Entry", 0, tmpl)
+			"Living":
+				add_room("living", "Living", 0, tmpl)
+			"Kitchen":
+				add_room("kitchen", "Kitchen", 0, tmpl)
+			_:
+				add_room(room_type.to_lower(), room_type, 0, tmpl)
+
 	program.rooms = rooms
-        program.edges = _build_program_edges(sampled, rooms, beds, baths, floors)
+	program.edges = _build_program_edges(sampled, rooms, beds, baths, floors)
 
 	if DEBUG_VERIFY:
 		print("[BN] program sample: rooms=%d edges=%d floors=%d" % [rooms.size(), program.edges.size(), floors])
@@ -609,16 +557,18 @@ func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: i
 		(ids_by_type[room_type] as Array).append(room_id)
 
 	func first_id(room_type: String) -> String:
-		if ids_by_type.has(room_type) and not (ids_by_type[room_type] as Array).is_empty():
-			return (ids_by_type[room_type] as Array)[0]
+		if ids_by_type.has(room_type):
+			var arr: Array = ids_by_type[room_type] as Array
+			if not arr.is_empty():
+				return arr[0]
 		return ""
 
-	add_edge.call(first_id.call("Entry"), first_id.call("Living"), "door")
+	add_edge(first_id("Entry"), first_id("Living"), "door")
 
-	if floors > 1:
-		var stair_ids := ids_by_type.get("Stair", [])
-		if stair_ids is Array and (stair_ids as Array).size() >= 2:
-			add_edge.call((stair_ids as Array)[0], (stair_ids as Array)[1], "door")
+	if floors > 1 and ids_by_type.has("Stair"):
+		var stair_ids: Array = ids_by_type["Stair"] as Array
+		if stair_ids.size() >= 2:
+			add_edge(stair_ids[0], stair_ids[1], "door")
 
 	for key in sampled.keys():
 		var key_str := String(key)
@@ -632,30 +582,27 @@ func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: i
 			continue
 		var type_a := parts[0]
 		var type_b := parts[1]
-                if not ids_by_type.has(type_a) or not ids_by_type.has(type_b):
-                        continue
-                var ids_a_variant := ids_by_type[type_a]
-                var ids_b_variant := ids_by_type[type_b]
-                if ids_a_variant is not Array or ids_b_variant is not Array:
-                        continue
-                var ids_a: Array = ids_a_variant as Array
-                var ids_b: Array = ids_b_variant as Array
-                if ids_a.is_empty() or ids_b.is_empty():
-                        continue
+		if not ids_by_type.has(type_a) or not ids_by_type.has(type_b):
+			continue
+		var ids_a: Array = ids_by_type[type_a] as Array
+		var ids_b: Array = ids_by_type[type_b] as Array
+		if ids_a.is_empty() or ids_b.is_empty():
+			continue
 		var count := max(ids_a.size(), ids_b.size())
-		var edge_kind := edge_kind_for.call(type_a, type_b)
+		var edge_kind := edge_kind_for(type_a, type_b)
 		for i in range(count):
 			var a_id := ids_a[min(i, ids_a.size() - 1)]
 			var b_id := ids_b[i % ids_b.size()]
-			add_edge.call(a_id, b_id, edge_kind)
+			add_edge(a_id, b_id, edge_kind)
 
 	if ids_by_type.has("Bedroom") and ids_by_type.has("Bathroom"):
-		var first_bed := first_id.call("Bedroom")
+		var first_bed := first_id("Bedroom")
 		var bath_ids: Array = ids_by_type["Bathroom"] as Array
 		for bath_id in bath_ids:
-			add_edge.call(first_bed, bath_id, "door")
+			add_edge(first_bed, bath_id, "door")
 
 	return edges
+
 func _sample_legacy(req: Dictionary) -> ArchitecturalProgram:
 	var program := ArchitecturalProgram.new()
 	program.footprint_m = req.get("footprint", Vector2i(16, 12))
@@ -675,12 +622,12 @@ func _sample_legacy(req: Dictionary) -> ArchitecturalProgram:
 		{
 			"id": "living", "type": "Living", "floor": 0, "needs_window": true,
 			"area_pdf": {"mean": 28.0, "sigma": 6.0},
-			"aspect_pdf": {"mean": 1.5,  "sigma": 0.4}
+			"aspect_pdf": {"mean": 1.5,	 "sigma": 0.4}
 		},
 		{
 			"id": "kitchen", "type": "Kitchen", "floor": 0, "needs_window": true,
 			"area_pdf": {"mean": 16.0, "sigma": 3.0},
-			"aspect_pdf": {"mean": 1.1,  "sigma": 0.2}
+			"aspect_pdf": {"mean": 1.1,	 "sigma": 0.2}
 		},
 	]
 
@@ -775,7 +722,7 @@ func p_adj(a: String, b: String) -> float:
 		"kitchen|bedroom": 0.2,
 		"bedroom|hall": 0.9,  # 🔥 NEW
 		"hall|bathroom": 0.8,  # 🔥 NEW
-		"hall|stair": 0.95,    # 🔥 NEW
+		"hall|stair": 0.95,	   # 🔥 NEW
 		"kitchen|pantry": 0.8, # 🔥 NEW
 		"kitchen|laundry": 0.7,# 🔥 NEW
 	}
