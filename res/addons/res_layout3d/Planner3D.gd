@@ -271,121 +271,157 @@ var roof_root: Node3D
 const WALL_H := 3.0
 const DEBUG_VERIFY := true
 
-func _ensure_cost_tree() -> void:
-	if cost_tree == null:
-		return
-	if cost_tree.columns < 2:
-		cost_tree.columns = 2
-		cost_tree.set_column_titles_visible(true)
-		cost_tree.set_column_title(0, "Term")
-		cost_tree.set_column_title(1, "Value")
-	if cost_tree.get_root() == null:
-		cost_tree.create_item()
-
 func _ready() -> void:
-	_bind_key("ui_stage_bubble", KEY_1)
-	_bind_key("ui_stage_schematic", KEY_2)
-	_bind_key("ui_stage_detailed", KEY_3)
-	_bind_key("ui_floor_prev", KEY_PAGEUP)
-	_bind_key("ui_floor_next", KEY_PAGEDOWN)
-	_bind_key("toggle_roof", KEY_R)
-	new_btn.pressed.connect(_new_program)
-	sample_btn.pressed.connect(_sample_program)
-	opt_btn.pressed.connect(_optimize_once)
-	run_btn.pressed.connect(_optimize_many)
-	batch_btn.pressed.connect(_on_batch_run_pressed)
-	style_btn.pressed.connect(cycle_style)
-	export_svg_btn.pressed.connect(func(): export_svg())
-	export_gltf_btn.pressed.connect(func(): export_gltf())
-	save_plan_btn.pressed.connect(func(): save_plan())
-	load_plan_btn.pressed.connect(func(): load_plan())
-	add_child(R)
+        new_btn.pressed.connect(_new_program)
+        sample_btn.pressed.connect(_sample_program)
+        opt_btn.pressed.connect(_optimize_once)
+        run_btn.pressed.connect(_optimize_many)
+        batch_btn.pressed.connect(_on_batch_run_pressed)
+        style_btn.pressed.connect(cycle_style)
+        export_svg_btn.pressed.connect(func() -> void: export_svg())
+        export_gltf_btn.pressed.connect(func() -> void: export_gltf())
+        save_plan_btn.pressed.connect(func() -> void: save_plan())
+        load_plan_btn.pressed.connect(func() -> void: load_plan())
 
-	R.reseed(Time.get_ticks_msec())
-	print("✓ RNG seeded with: %d" % Time.get_ticks_msec())
+        _bind_key("ui_stage_bubble", KEY_1)
+        _bind_key("ui_stage_schematic", KEY_2)
+        _bind_key("ui_stage_detailed", KEY_3)
+        _bind_key("ui_floor_prev", KEY_PAGEUP)
+        _bind_key("ui_floor_next", KEY_PAGEDOWN)
+        _bind_key("toggle_roof", KEY_H)
 
-	program_gen = ProgramGen.new()
-	add_child(program_gen)
-	bn = ProgramBN.new()
-	if bn and bn.has_method("configure_rng"):
-		bn.configure_rng(R)
-	add_child(bn)
-	# PlanCost is a RefCounted service; keep it off the scene tree.
-	plan_cost = PlanCost.new()
-	_ensure_cost_tree()
-	var corpus: Array = []
-	var used_resplan := false
-	if USE_RESPLAN:
-		corpus = TrainingData.load_resplan_as_programs(RESPLAN_DIR)
-		if not corpus.is_empty():
-			used_resplan = true
-	if corpus.is_empty():
-		if used_resplan and DEBUG_VERIFY:
-			print("[RESPLAN] corpus empty, falling back to synthetic defaults")
-		var defaults := TrainingData.create_default()
-		corpus.append_array(defaults.single_story)
-		corpus.append_array(defaults.two_story)
-		corpus.append_array(defaults.three_story)
+        if R.get_parent() == null:
+                add_child(R)
+        var seed := Time.get_ticks_msec()
+        R.reseed(seed)
+        print("✓ RNG seeded with: %d" % seed)
 
-		var schema_hint := TrainingData.derive_schema_from_corpus(corpus)
-		var binning: Dictionary = TrainingData.bin_corpus(corpus, schema_hint)
-		var schema: Dictionary = binning.get("schema", {})
-		if DEBUG_VERIFY:
-				var type_preview: Array[String] = []
-				var pair_preview: Array[String] = []
-				var type_count := 0
-				var pair_count := 0
-				var type_variant := schema.get("room_type_labels", schema.get("room_types", []))
-				if type_variant is PackedStringArray:
-						var psa: PackedStringArray = type_variant
-						type_count = psa.size()
-						for i in range(min(type_count, 10)):
-								type_preview.append(String(psa[i]))
-				elif type_variant is Array:
-						var arr: Array = type_variant
-						type_count = arr.size()
-						for i in range(min(type_count, 10)):
-								type_preview.append(String(arr[i]))
-				var pair_variant := schema.get("adj_pair_labels", schema.get("adj_pairs", []))
-				if pair_variant is PackedStringArray:
-						var psa_pairs: PackedStringArray = pair_variant
-						pair_count = psa_pairs.size()
-						for i in range(min(pair_count, 10)):
-								pair_preview.append(String(psa_pairs[i]))
-				elif pair_variant is Array:
-						var arr_pairs: Array = pair_variant
-						pair_count = arr_pairs.size()
-						for i in range(min(pair_count, 10)):
-								pair_preview.append(String(arr_pairs[i]))
-				print("[SCHEMA] types=%d pairs=%d type_preview=%s pair_preview=%s" % [type_count, pair_count, type_preview, pair_preview])
-		if schema.is_empty() and not schema_hint.is_empty():
-				schema = schema_hint
-	if bn and bn.has_method("configure_from_schema"):
-		bn.configure_from_schema(schema)
-	var binned_instances: Array = binning.get("instances", [])
-	if bn and bn.has_method("train_binned"):
-		bn.train_binned(binned_instances, schema)
-		print("✓ Bayesian Network trained with %d instances" % binned_instances.size())
-		if DEBUG_VERIFY:
-			var room_types_count := 0
-			var room_types_variant := schema.get("room_types")
-			if room_types_variant is Array:
-				room_types_count = (room_types_variant as Array).size()
-			var adj_pairs_count := int(schema.get("adj_pairs_count", 0))
-			if adj_pairs_count == 0:
-				var adj_variant := schema.get("adj_pairs")
-				if adj_variant is Array:
-					adj_pairs_count = (adj_variant as Array).size()
-			print("[PLAN] BN ready. room_types=%d adj_pairs=%d" % [room_types_count, adj_pairs_count])
+        program_gen = ProgramGen.new()
+        add_child(program_gen)
 
-	w_access.value_changed.connect(func(_v): _apply_weights())
-	w_dims.value_changed.connect(func(_v): _apply_weights())
-	w_shape.value_changed.connect(func(_v): _apply_weights())
-	w_exposure.value_changed.connect(func(_v): _apply_weights())
-	if plan_cost != null:
-		_apply_weights()
-	for sb in [floors_sb, bedrooms_sb, bathrooms_sb, sqft_sb]:
-		sb.value_changed.connect(func(_v): _new_program())
+        bn = ProgramBN.new()
+        if bn and bn.has_method("configure_rng"):
+                bn.configure_rng(R)
+        add_child(bn)
+
+        plan_cost = PlanCost.new()
+
+        _ensure_cost_tree()
+
+        _ensure_overlay()
+        var ui_root_node := ui_root
+        if overlay != null:
+                overlay.name = "BubbleOverlay"
+                overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+                overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+                overlay.z_index = -100
+                if overlay.get_parent() != ui_root_node:
+                        if overlay.get_parent():
+                                overlay.get_parent().remove_child(overlay)
+                        ui_root_node.add_child(overlay)
+        overlay_chk.toggled.connect(func(pressed: bool) -> void:
+                if overlay:
+                        overlay.visible = pressed and view_stage == "Bubble"
+        )
+        overlay.visible = overlay_chk.button_pressed and view_stage == "Bubble"
+
+        _ensure_roof_root()
+        roof_chk.toggled.connect(func(on: bool) -> void:
+                if is_instance_valid(roof_root):
+                        roof_root.visible = on
+        )
+
+        var corpus: Array = []
+        var used_resplan := false
+        if USE_RESPLAN:
+                corpus = TrainingData.load_resplan_as_programs(RESPLAN_DIR)
+                if not corpus.is_empty():
+                        used_resplan = true
+
+        if corpus.is_empty():
+                if used_resplan and DEBUG_VERIFY:
+                        print("[RESPLAN] corpus empty, falling back to synthetic defaults")
+                var defaults := TrainingData.create_default()
+                corpus.append_array(defaults.single_story)
+                corpus.append_array(defaults.two_story)
+                corpus.append_array(defaults.three_story)
+
+        var schema := TrainingData.derive_schema_from_corpus(corpus)
+        var binning := TrainingData.bin_corpus(corpus, schema)
+        schema = binning.get("schema", schema)
+        var binned_instances: Array = binning.get("instances", [])
+
+        if DEBUG_VERIFY:
+                var type_preview: Array[String] = []
+                var pair_preview: Array[String] = []
+                var type_count := 0
+                var pair_count := 0
+                var type_variant := schema.get("room_type_labels", schema.get("room_types", []))
+                if type_variant is PackedStringArray:
+                        var psa: PackedStringArray = type_variant
+                        type_count = psa.size()
+                        for i in range(min(type_count, 10)):
+                                type_preview.append(String(psa[i]))
+                elif type_variant is Array:
+                        var arr: Array = type_variant
+                        type_count = arr.size()
+                        for i in range(min(type_count, 10)):
+                                type_preview.append(String(arr[i]))
+                var pair_variant := schema.get("adj_pair_labels", schema.get("adj_pairs", []))
+                if pair_variant is PackedStringArray:
+                        var psa_pairs: PackedStringArray = pair_variant
+                        pair_count = psa_pairs.size()
+                        for i in range(min(pair_count, 10)):
+                                pair_preview.append(String(psa_pairs[i]))
+                elif pair_variant is Array:
+                        var arr_pairs: Array = pair_variant
+                        pair_count = arr_pairs.size()
+                        for i in range(min(pair_count, 10)):
+                                pair_preview.append(String(arr_pairs[i]))
+                print("[SCHEMA] types=%d pairs=%d type_preview=%s pair_preview=%s" % [type_count, pair_count, type_preview, pair_preview])
+
+        if bn and bn.has_method("configure_from_schema"):
+                bn.configure_from_schema(schema)
+        if bn and bn.has_method("train_binned"):
+                bn.train_binned(binned_instances, schema)
+                print("✓ Bayesian Network trained with %d instances" % binned_instances.size())
+                if DEBUG_VERIFY:
+                        var room_types_count := 0
+                        var room_types_variant := schema.get("room_type_labels", schema.get("room_types", []))
+                        if room_types_variant is PackedStringArray:
+                                room_types_count = (room_types_variant as PackedStringArray).size()
+                        elif room_types_variant is Array:
+                                room_types_count = (room_types_variant as Array).size()
+                        var adj_pairs_count := int(schema.get("adj_pairs_count", 0))
+                        if adj_pairs_count == 0:
+                                var adj_variant := schema.get("adj_pair_labels", schema.get("adj_pairs", []))
+                                if adj_variant is PackedStringArray:
+                                        adj_pairs_count = (adj_variant as PackedStringArray).size()
+                                elif adj_variant is Array:
+                                        adj_pairs_count = (adj_variant as Array).size()
+                        print("[PLAN] BN ready. room_types=%d adj_pairs=%d" % [room_types_count, adj_pairs_count])
+
+        w_access.value_changed.connect(func(_v): _apply_weights())
+        w_dims.value_changed.connect(func(_v): _apply_weights())
+        w_shape.value_changed.connect(func(_v): _apply_weights())
+        w_exposure.value_changed.connect(func(_v): _apply_weights())
+        w_floors.value_changed.connect(func(_v): _apply_weights())
+
+        for sb in [floors_sb, bedrooms_sb, bathrooms_sb, sqft_sb]:
+                sb.value_changed.connect(func(_v): _new_program())
+        footprint_le.text_submitted.connect(func(_text): _new_program())
+
+        if plan_cost != null:
+                _apply_weights()
+
+        if styles.size() > 0:
+                style_idx = clamp(style_idx, 0, styles.size() - 1)
+                style = styles[style_idx]
+
+        set_stage(view_stage)
+        _new_program()
+        if is_instance_valid(roof_root):
+                roof_root.visible = roof_chk.button_pressed
 func _ensure_roof_root() -> void:
 	if not is_instance_valid(roof_root):
 		roof_root = Node3D.new()
@@ -1154,6 +1190,17 @@ func _ensure_overlay() -> void:
 		overlay = BubbleOverlay.new()
 	if bubble_ui == null or not is_instance_valid(bubble_ui):
 		bubble_ui = overlay
+
+func _ensure_cost_tree() -> void:
+	if cost_tree == null:
+		return
+	if cost_tree.columns < 2:
+		cost_tree.columns = 2
+		cost_tree.set_column_titles_visible(true)
+		cost_tree.set_column_title(0, "Term")
+		cost_tree.set_column_title(1, "Value")
+	if cost_tree.get_root() == null:
+		cost_tree.create_item()
 
 func set_stage(stage: String) -> void:
 	view_stage = stage
