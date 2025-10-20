@@ -578,7 +578,8 @@ func _build_program_edges(sampled: Dictionary, rooms: Array, beds: int, baths: i
 	var pair_labels: Array = []
 	var pair_variant := schema_edges.get("adj_pair_labels", schema_edges.get("adj_pairs", []))
 	if pair_variant is PackedStringArray:
-		pair_labels = (pair_variant as PackedStringArray).to_array()
+		for lbl in (pair_variant as PackedStringArray):
+			pair_labels.append(String(lbl))
 	elif pair_variant is Array:
 		pair_labels = (pair_variant as Array).duplicate()
 
