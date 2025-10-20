@@ -327,11 +327,39 @@ func _ready() -> void:
 		corpus.append_array(defaults.two_story)
 		corpus.append_array(defaults.three_story)
 
-	var schema_hint := TrainingData.derive_schema_from_corpus(corpus)
-	var binning: Dictionary = TrainingData.bin_corpus(corpus, schema_hint)
-	var schema: Dictionary = binning.get("schema", {})
-	if schema.is_empty() and not schema_hint.is_empty():
-		schema = schema_hint
+        var schema_hint := TrainingData.derive_schema_from_corpus(corpus)
+        var binning: Dictionary = TrainingData.bin_corpus(corpus, schema_hint)
+        var schema: Dictionary = binning.get("schema", {})
+        if DEBUG_VERIFY:
+                var type_preview: Array[String] = []
+                var pair_preview: Array[String] = []
+                var type_count := 0
+                var pair_count := 0
+                var type_variant := schema.get("room_type_labels", schema.get("room_types", []))
+                if type_variant is PackedStringArray:
+                        var psa: PackedStringArray = type_variant
+                        type_count = psa.size()
+                        for i in range(min(type_count, 10)):
+                                type_preview.append(String(psa[i]))
+                elif type_variant is Array:
+                        var arr: Array = type_variant
+                        type_count = arr.size()
+                        for i in range(min(type_count, 10)):
+                                type_preview.append(String(arr[i]))
+                var pair_variant := schema.get("adj_pair_labels", schema.get("adj_pairs", []))
+                if pair_variant is PackedStringArray:
+                        var psa_pairs: PackedStringArray = pair_variant
+                        pair_count = psa_pairs.size()
+                        for i in range(min(pair_count, 10)):
+                                pair_preview.append(String(psa_pairs[i]))
+                elif pair_variant is Array:
+                        var arr_pairs: Array = pair_variant
+                        pair_count = arr_pairs.size()
+                        for i in range(min(pair_count, 10)):
+                                pair_preview.append(String(arr_pairs[i]))
+                print("[SCHEMA] types=%d pairs=%d type_preview=%s pair_preview=%s" % [type_count, pair_count, type_preview, pair_preview])
+        if schema.is_empty() and not schema_hint.is_empty():
+                schema = schema_hint
 	if bn and bn.has_method("configure_from_schema"):
 		bn.configure_from_schema(schema)
 	var binned_instances: Array = binning.get("instances", [])

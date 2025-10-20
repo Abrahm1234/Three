@@ -66,11 +66,38 @@ const RESPLAN_TYPES := {
 }
 
 const RESPLAN_EXCLUDE_TYPES := {
-"Patio": true,
-"Garage": true,
-"Porch": true,
-"Other": true
+    "Patio": true,
+    "Garage": true,
+    "Porch": true,
+    "Other": true
 }
+
+const CORE_ROOM_TYPES := [
+    "Entry",
+    "Hall",
+    "Living",
+    "Kitchen",
+    "Dining",
+    "Bedroom",
+    "Bathroom",
+    "Laundry"
+]
+
+const CORE_ADJ_PAIR_SEEDS := [
+    ["Entry", "Living"],
+    ["Entry", "Hall"],
+    ["Hall", "Living"],
+    ["Hall", "Bedroom"],
+    ["Hall", "Bathroom"],
+    ["Living", "Kitchen"],
+    ["Dining", "Kitchen"],
+    ["Dining", "Living"],
+    ["Kitchen", "Laundry"],
+    ["Living", "Patio"]
+]
+
+const MIN_ROOM_TYPE_FREQ := 50
+const MIN_ADJ_PAIR_FREQ := 100
 
 static func _norm_label(source: String) -> String:
     var key := source.strip_edges().to_lower()
@@ -1129,9 +1156,9 @@ static func _program_to_dict(prog) -> Dictionary:
     return result
 
 static func _build_schema(programs: Array, edges: Dictionary) -> Dictionary:
-    var room_types := {}
     var count_max := {}
-    var adj_labels := {}
+    var type_freq := {}
+    var pair_freq := {}
 
     for prog in programs:
         if typeof(prog) != TYPE_DICTIONARY:
@@ -1139,26 +1166,56 @@ static func _build_schema(programs: Array, edges: Dictionary) -> Dictionary:
         var dict_prog: Dictionary = prog
         var counts: Dictionary = dict_prog.get("room_counts", {})
         for t in counts.keys():
-            room_types[t] = true
             var c := int(counts[t])
             var prev := int(count_max.get(t, 0))
             if c > prev:
                 count_max[t] = c
+            if c > 0:
+                type_freq[t] = int(type_freq.get(t, 0)) + 1
         for pair in dict_prog.get("adj_pairs", []):
             if pair is Dictionary:
                 var label := String(pair.get("pair", ""))
                 if label != "":
-                    adj_labels[label] = true
+                    pair_freq[label] = int(pair_freq.get(label, 0)) + 1
         var summary_variant := dict_prog.get("adj_summary", {})
         if summary_variant is Dictionary:
             var summary_dict: Dictionary = summary_variant
             for label in summary_dict.keys():
-                if String(label) != "":
-                    adj_labels[String(label)] = true
+                var canon := String(label)
+                if canon != "":
+                    pair_freq[canon] = int(pair_freq.get(canon, 0)) + 1
 
-    var room_type_list: Array = room_types.keys()
+    var room_type_list: Array = []
+    for t in type_freq.keys():
+        if int(type_freq[t]) >= MIN_ROOM_TYPE_FREQ:
+            room_type_list.append(t)
+    for core in CORE_ROOM_TYPES:
+        if not room_type_list.has(core):
+            room_type_list.append(core)
     room_type_list.sort()
-    var adj_list: Array = adj_labels.keys()
+    for t in room_type_list:
+        if not count_max.has(t):
+            count_max[t] = 0
+
+    var adj_list: Array = []
+    for label in pair_freq.keys():
+        var parts := String(label).split("|", false)
+        if parts.size() != 2:
+            continue
+        if not room_type_list.has(parts[0]) or not room_type_list.has(parts[1]):
+            continue
+        if int(pair_freq[label]) >= MIN_ADJ_PAIR_FREQ:
+            adj_list.append(String(label))
+    for pair_seed in CORE_ADJ_PAIR_SEEDS:
+        if pair_seed.size() != 2:
+            continue
+        var a := String(pair_seed[0])
+        var b := String(pair_seed[1])
+        if not room_type_list.has(a) or not room_type_list.has(b):
+            continue
+        var canonical := _room_pair_label(a, b)
+        if not adj_list.has(canonical):
+            adj_list.append(canonical)
     adj_list.sort()
 
     var schema := {
