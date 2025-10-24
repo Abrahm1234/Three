@@ -39,13 +39,47 @@ var nodes: Dictionary = {}  # name -> BNNode
 var training_data: TrainingData
 var rng_ctx: RandomCtx
 
-# Legacy fallback support
 var P_beds := {
 	"small": [2, 3],
 	"med": [3, 4],
 	"large": [4, 5],
 }
 var P_baths_given_beds := {2: 1, 3: 2, 4: 3, 5: 3}
+
+func _has_node(name: String) -> bool:
+	return nodes.has(name)
+
+func _value_truthy(v: Variant) -> bool:
+	match typeof(v):
+		TYPE_BOOL:
+			return v
+		TYPE_INT, TYPE_FLOAT:
+			return int(v) != 0
+		TYPE_STRING:
+			var s := String(v)
+			return s != "" and s.to_lower() != "false"
+		_:
+			return v != null
+
+func _enforce_bridge_constraints(sampled: Dictionary) -> void:
+	if not _has_node("Hall_exists"):
+		return
+	if _value_truthy(sampled.get("Entry_exists", false)) or _value_truthy(sampled.get("Living_exists", false)):
+		sampled["Hall_exists"] = true
+
+func _edge_cache_key(a_id: String, b_id: String, typ: String) -> String:
+	if a_id <= b_id:
+		return "%s|%s|%s" % [a_id, b_id, typ]
+	return "%s|%s|%s" % [b_id, a_id, typ]
+
+func _append_edge(edges: Array[Dictionary], cache: Dictionary, a_id: String, b_id: String, typ: String) -> void:
+	if a_id == "" or b_id == "":
+		return
+	var key := _edge_cache_key(a_id, b_id, typ)
+	if cache.has(key):
+		return
+	edges.append({"a_id": a_id, "b_id": b_id, "type": typ})
+	cache[key] = true
 
 func configure_rng(ctx: RandomCtx) -> void:
 	rng_ctx = ctx
@@ -230,6 +264,7 @@ func _sample_from_bn(req: Dictionary) -> ArchitecturalProgram:
 		sampled[node_name] = node.sample_given(parent_vals, rng)
 	
 	# Convert sampled values to architectural program
+	_enforce_bridge_constraints(sampled)
 	return _sampled_to_program(sampled, req)
 
 ## Compute topological sort of BN nodes (Kahn's algorithm)
@@ -360,56 +395,114 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 
 	program.rooms = rooms
 
-	# Edge generation with Hall support
+		# Edge generation with Hall support
 	var edges: Array[Dictionary] = []
-	var adj_type := sampled.get("adj_Living_Kitchen", "open")
-	if adj_type != "none":
-		edges.append({"a_id": "living", "b_id": "kitchen", "type": String(adj_type)})
+	var edge_cache := {}
 
-	edges.append({"a_id": "entry", "b_id": "living", "type": "door"})
-	
-	var has_hall := rooms.any(func(r): return r["type"] == "Hall")
-	
-	if has_hall:
-		for i in range(beds):
-			if i == 0 and beds > 1:
-				edges.append({"a_id": "living", "b_id": "bed_%d" % (i + 1), "type": "door"})
-			else:
-				edges.append({"a_id": "hall", "b_id": "bed_%d" % (i + 1), "type": "door"})
-		
-		if floors > 1:  # ✅ floors is available
-			edges.append({"a_id": "hall", "b_id": "stair_1", "type": "door"})
-			edges.append({"a_id": "entry", "b_id": "stair_0", "type": "door"})
-		else:
-			edges.append({"a_id": "entry", "b_id": "hall", "type": "door"})
-		
-		for i in range(1, baths):
-			edges.append({"a_id": "hall", "b_id": "bath_%d" % (i + 1), "type": "door"})
+
+	var type_to_ids := {}
+	for info in rooms:
+		var typ := String(info.get("type", ""))
+		if typ == "":
+			continue
+		if not type_to_ids.has(typ):
+			type_to_ids[typ] = []
+		type_to_ids[typ].append(String(info.get("id", "")))
+
+
+	var entry_ids: Array = type_to_ids.get("Entry", [])
+	var hall_ids: Array = type_to_ids.get("Hall", [])
+	var living_ids: Array = type_to_ids.get("Living", [])
+	var kitchen_ids: Array = type_to_ids.get("Kitchen", [])
+	var bedroom_ids: Array = type_to_ids.get("Bedroom", [])
+	var bath_ids: Array = type_to_ids.get("Bathroom", [])
+	var stair_ids: Array = type_to_ids.get("Stair", [])
+	var dining_ids: Array = type_to_ids.get("Dining", [])
+	var pantry_ids: Array = type_to_ids.get("Pantry", [])
+	var laundry_ids: Array = type_to_ids.get("Laundry", [])
+	var office_ids: Array = type_to_ids.get("Office", [])
+	var study_ids: Array = type_to_ids.get("Study", [])
+	var garage_ids: Array = type_to_ids.get("Garage", [])
+	var porch_ids: Array = type_to_ids.get("Porch", [])
+
+
+	var entry_id := entry_ids.size() > 0 ? String(entry_ids[0]) : ""
+	var hall_id := hall_ids.size() > 0 ? String(hall_ids[0]) : ""
+	var living_id := living_ids.size() > 0 ? String(living_ids[0]) : ""
+	var kitchen_id := kitchen_ids.size() > 0 ? String(kitchen_ids[0]) : ""
+
+
+	if entry_id != "" and living_id != "":
+		_append_edge(edges, edge_cache, entry_id, living_id, "door")
+	if entry_id != "" and hall_id != "":
+		_append_edge(edges, edge_cache, entry_id, hall_id, "door")
+	if hall_id != "" and living_id != "":
+		_append_edge(edges, edge_cache, hall_id, living_id, "door")
+
+
+	var adj_type := String(sampled.get("adj_Living_Kitchen", "open"))
+	if living_id != "" and kitchen_id != "" and adj_type != "none":
+		_append_edge(edges, edge_cache, living_id, kitchen_id, adj_type)
+
+
+	if hall_id != "":
+		for id in bedroom_ids:
+			_append_edge(edges, edge_cache, hall_id, String(id), "door")
+	elif living_id != "":
+		for id in bedroom_ids:
+			_append_edge(edges, edge_cache, living_id, String(id), "door")
+	elif entry_id != "":
+		for id in bedroom_ids:
+			_append_edge(edges, edge_cache, entry_id, String(id), "door")
+
+
+	if floors > 1 and entry_id != "" and stair_ids.size() > 0:
+		_append_edge(edges, edge_cache, entry_id, String(stair_ids[0]), "door")
+	if floors > 1 and hall_id != "" and stair_ids.size() > 1:
+		_append_edge(edges, edge_cache, hall_id, String(stair_ids[1]), "door")
+	elif floors > 1 and hall_id != "" and stair_ids.size() > 0:
+		_append_edge(edges, edge_cache, hall_id, String(stair_ids[0]), "door")
+
+
+	if bedroom_ids.size() > 0 and bath_ids.size() > 0:
+		_append_edge(edges, edge_cache, String(bedroom_ids[0]), String(bath_ids[0]), "door")
+	if hall_id != "":
+		for id in bath_ids:
+			_append_edge(edges, edge_cache, hall_id, String(id), "door")
 	else:
-		for i in range(beds):
-			edges.append({"a_id": "living", "b_id": "bed_%d" % (i + 1), "type": "door"})
-	
-	if baths > 0:
-		edges.append({"a_id": "bed_1", "b_id": "bath_1", "type": "door"})
-	
-	if sampled.get("Dining_exists", false):
-		edges.append({"a_id": "living", "b_id": "dining", "type": "open"})
-		edges.append({"a_id": "dining", "b_id": "kitchen", "type": "open"})
-	
-	if sampled.get("Pantry_exists", false):
-		edges.append({"a_id": "kitchen", "b_id": "pantry", "type": "door"})
-	
-	if sampled.get("Laundry_exists", false):
-		edges.append({"a_id": "kitchen", "b_id": "laundry", "type": "door"})
-	
-	if sampled.get("Office_exists", false) or sampled.get("Study_exists", false):
-		edges.append({"a_id": "entry", "b_id": "office", "type": "door"})
-	
-	if sampled.get("Garage_exists", false):
-		edges.append({"a_id": "entry", "b_id": "garage", "type": "door"})
-	
-	if sampled.get("Porch_exists", false):
-		edges.append({"a_id": "living", "b_id": "porch", "type": "door"})
+		var anchor := living_id
+		if anchor == "" and bedroom_ids.size() > 0:
+			anchor = String(bedroom_ids[0])
+		elif anchor == "" and entry_id != "":
+			anchor = entry_id
+		if anchor != "":
+			for id in bath_ids:
+				_append_edge(edges, edge_cache, anchor, String(id), "door")
+
+
+	if dining_ids.size() > 0:
+		var dining_id := String(dining_ids[0])
+		if living_id != "":
+			_append_edge(edges, edge_cache, living_id, dining_id, "open")
+		if kitchen_id != "":
+			_append_edge(edges, edge_cache, dining_id, kitchen_id, "open")
+
+
+	if pantry_ids.size() > 0 and kitchen_id != "":
+		_append_edge(edges, edge_cache, kitchen_id, String(pantry_ids[0]), "door")
+	if laundry_ids.size() > 0 and kitchen_id != "":
+		_append_edge(edges, edge_cache, kitchen_id, String(laundry_ids[0]), "door")
+
+
+	var study_anchor_ids: Array = office_ids.size() > 0 ? office_ids : study_ids
+	if entry_id != "" and study_anchor_ids.size() > 0:
+		_append_edge(edges, edge_cache, entry_id, String(study_anchor_ids[0]), "door")
+
+
+	if garage_ids.size() > 0 and entry_id != "":
+		_append_edge(edges, edge_cache, entry_id, String(garage_ids[0]), "door")
+	if porch_ids.size() > 0 and living_id != "":
+		_append_edge(edges, edge_cache, living_id, String(porch_ids[0]), "door")
 
 	program.edges = edges
 	

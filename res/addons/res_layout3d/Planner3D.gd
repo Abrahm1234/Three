@@ -3,6 +3,7 @@ extends Node3D
 const EPS := 1e-4
 
 const GeomUtils := preload("res://addons/res_layout3d/GeomUtils.gd")
+const RESPLAN_DIR := "res://addons/res_layout3d/data/datasets/resplan"
 
 func _edge_key(axis: String, c: float) -> String:
 	return "%s@%.5f" % [axis, c]
@@ -288,7 +289,22 @@ func _ready() -> void:
 	add_child(bn)
 	
 	var TrainingDataClass = load("res://addons/res_layout3d/data/TrainingData.gd")
-	var training_data = TrainingDataClass.create_default()
+	var training_data
+	if TrainingDataClass and TrainingDataClass.has_method("load_resplan"):
+		training_data = TrainingDataClass.load_resplan(RESPLAN_DIR)
+	var has_samples := false
+	if training_data:
+		has_samples = not (
+			training_data.single_story.is_empty() and
+			training_data.two_story.is_empty() and
+			training_data.three_story.is_empty()
+		)
+	if has_samples:
+		var total := training_data.single_story.size() + training_data.two_story.size() + training_data.three_story.size()
+		print("✓ ResPlan dataset loaded: %d instances" % total)
+	else:
+		training_data = TrainingDataClass.create_default()
+		print("⚠️ Using built-in synthetic training data")
 	if bn and bn.has_method("train"):
 		bn.train(training_data, 1)
 		print("✓ Bayesian Network trained with %d instances" % training_data.single_story.size())
