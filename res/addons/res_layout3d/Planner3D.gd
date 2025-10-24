@@ -4,6 +4,7 @@ const EPS := 1e-4
 
 const USE_RESPLAN := true
 const GeomUtils := preload("res://addons/res_layout3d/GeomUtils.gd")
+const ProgramBN := preload("res://addons/res_layout3d/ProgramBN.gd")
 const RESPLAN_DIR := "res://addons/res_layout3d/data/datasets/resplan"
 
 func _edge_key(axis: String, c: float) -> String:
@@ -290,7 +291,7 @@ func _ready() -> void:
 	add_child(bn)
 	
 	var TrainingDataClass = load("res://addons/res_layout3d/data/TrainingData.gd")
-	var training_data: TrainingData
+	var training_data: TrainingData = null
 	if TrainingDataClass:
 		var manifest_path := RESPLAN_DIR.path_join("plans_manifest.jsonl")
 		print("[CHK] manifest exists=", FileAccess.file_exists(manifest_path))
@@ -299,7 +300,7 @@ func _ready() -> void:
 			var first_path_str := String(first_json_path)
 			print("[CHK] first json path=", first_path_str)
 			print("[CHK] first exists=", FileAccess.file_exists(first_path_str))
-		var corpus: TrainingData
+		var corpus: TrainingData = null
 		if USE_RESPLAN:
 			if TrainingDataClass.has_method("load_resplan_as_programs"):
 				corpus = TrainingDataClass.call("load_resplan_as_programs", RESPLAN_DIR)
@@ -316,7 +317,11 @@ func _ready() -> void:
 		training_data = TrainingData.create_default()
 	if bn and bn.has_method("train") and training_data:
 		bn.train(training_data, 1)
-		var trained_count := training_data.size() if training_data.has_method("size") else training_data.single_story.size()
+		var trained_count: int
+		if training_data.has_method("size"):
+			trained_count = int(training_data.size())
+		else:
+			trained_count = int(training_data.single_story.size())
 		print("✓ Bayesian Network trained with %d instances" % trained_count)
 	
 	w_access.value_changed.connect(func(_v): _apply_weights())
@@ -711,7 +716,7 @@ func _metrics_for(part: Partition) -> Dictionary:
 	var shape := plan_cost.C_shape(part)
 	var exposure := plan_cost.C_exposure(part, terms)
 	var overlap := plan_cost.C_overlap(part)
-	var total := plan_cost.total(part, entry_idx, terms)
+	var total: float = plan_cost.total(part, entry_idx, terms)
 	return {
 		"access": access,
 		"dims": dims,

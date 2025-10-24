@@ -35,7 +35,11 @@ static func _path_join(base: String, rel: String) -> String:
 	return "%s/%s" % [clean_base, clean_rel]
 
 static func _manifest_plan_path(dir_path: String, meta: Dictionary) -> String:
-	var key := meta.has("json") ? "json" : (meta.has("file") ? "file" : "")
+	var key := ""
+	if meta.has("json"):
+		key = "json"
+	elif meta.has("file"):
+		key = "file"
 	if key == "":
 		return ""
 	var rel := str(meta.get(key, ""))
