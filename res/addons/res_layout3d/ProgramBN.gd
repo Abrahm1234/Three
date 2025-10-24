@@ -1,7 +1,6 @@
 extends Node
 class_name ProgramBN
 
-const RandomCtx := preload("res://addons/res_layout3d/core/RandomCtx.gd")
 const TrainingData := preload("res://addons/res_layout3d/data/TrainingData.gd")
 
 ## Bayesian Network Node

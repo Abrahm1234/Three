@@ -300,7 +300,7 @@ func _ready() -> void:
 			training_data.three_story.is_empty()
 		)
 	if has_samples:
-		var total := training_data.single_story.size() + training_data.two_story.size() + training_data.three_story.size()
+		var total: int = training_data.single_story.size() + training_data.two_story.size() + training_data.three_story.size()
 		print("✓ ResPlan dataset loaded: %d instances" % total)
 	else:
 		training_data = TrainingDataClass.create_default()
