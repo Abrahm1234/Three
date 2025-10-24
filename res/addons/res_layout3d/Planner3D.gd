@@ -2,6 +2,7 @@ extends Node3D
 
 const EPS := 1e-4
 
+const USE_RESPLAN := true
 const GeomUtils := preload("res://addons/res_layout3d/GeomUtils.gd")
 const RESPLAN_DIR := "res://addons/res_layout3d/data/datasets/resplan"
 
@@ -289,25 +290,34 @@ func _ready() -> void:
 	add_child(bn)
 	
 	var TrainingDataClass = load("res://addons/res_layout3d/data/TrainingData.gd")
-	var training_data
-	if TrainingDataClass and TrainingDataClass.has_method("load_resplan"):
-		training_data = TrainingDataClass.load_resplan(RESPLAN_DIR)
-	var has_samples := false
-	if training_data:
-		has_samples = not (
-			training_data.single_story.is_empty() and
-			training_data.two_story.is_empty() and
-			training_data.three_story.is_empty()
-		)
-	if has_samples:
-		var total: int = training_data.single_story.size() + training_data.two_story.size() + training_data.three_story.size()
-		print("✓ ResPlan dataset loaded: %d instances" % total)
-	else:
-		training_data = TrainingDataClass.create_default()
-		print("⚠️ Using built-in synthetic training data")
-	if bn and bn.has_method("train"):
+	var training_data: TrainingData
+	if TrainingDataClass:
+		var manifest_path := RESPLAN_DIR.path_join("plans_manifest.jsonl")
+		print("[CHK] manifest exists=", FileAccess.file_exists(manifest_path))
+		if TrainingDataClass.has_method("_manifest_plan_path"):
+			var first_json_path: Variant = TrainingDataClass.call("_manifest_plan_path", RESPLAN_DIR, {"json": "export_json/plan_00000.json"})
+			var first_path_str := String(first_json_path)
+			print("[CHK] first json path=", first_path_str)
+			print("[CHK] first exists=", FileAccess.file_exists(first_path_str))
+		var corpus: TrainingData
+		if USE_RESPLAN:
+			if TrainingDataClass.has_method("load_resplan_as_programs"):
+				corpus = TrainingDataClass.call("load_resplan_as_programs", RESPLAN_DIR)
+			elif TrainingDataClass.has_method("load_resplan"):
+				corpus = TrainingDataClass.call("load_resplan", RESPLAN_DIR)
+		if corpus and corpus.has_method("is_empty") and not corpus.is_empty():
+			training_data = corpus
+			print("[RESPLAN] loaded=", corpus.size())
+		elif USE_RESPLAN:
+			print("⚠️ Using built-in synthetic training data (empty corpus at ", RESPLAN_DIR, ")")
+		if training_data == null and TrainingDataClass.has_method("create_default"):
+			training_data = TrainingDataClass.create_default()
+	if training_data == null:
+		training_data = TrainingData.create_default()
+	if bn and bn.has_method("train") and training_data:
 		bn.train(training_data, 1)
-		print("✓ Bayesian Network trained with %d instances" % training_data.single_story.size())
+		var trained_count := training_data.size() if training_data.has_method("size") else training_data.single_story.size()
+		print("✓ Bayesian Network trained with %d instances" % trained_count)
 	
 	w_access.value_changed.connect(func(_v): _apply_weights())
 	w_dims.value_changed.connect(func(_v): _apply_weights())

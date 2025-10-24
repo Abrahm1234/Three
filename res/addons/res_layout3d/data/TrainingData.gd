@@ -18,8 +18,14 @@ var three_story: Array = []
 var schema_labels: PackedStringArray = PackedStringArray()
 var schema_adj_pairs: PackedStringArray = PackedStringArray()
 
-const MIN_TYPE_FREQ := 50
-const MIN_PAIR_FREQ := 25
+const MIN_TYPE_FREQ := 25
+const MIN_PAIR_FREQ := 10
+
+func size() -> int:
+	return single_story.size() + two_story.size() + three_story.size()
+
+func is_empty() -> bool:
+	return size() == 0
 
 static func _path_join(base: String, rel: String) -> String:
 	if rel.is_absolute_path():
@@ -28,31 +34,56 @@ static func _path_join(base: String, rel: String) -> String:
 	var clean_rel := rel.lstrip('./')
 	return "%s/%s" % [clean_base, clean_rel]
 
-static func _load_manifest_lines(manifest_path: String) -> Array[String]:
-	var lines: Array[String] = []
-	if not FileAccess.file_exists(manifest_path):
-		return lines
-	var fa := FileAccess.open(manifest_path, FileAccess.READ)
+static func _manifest_plan_path(dir_path: String, meta: Dictionary) -> String:
+	var key := meta.has("json") ? "json" : (meta.has("file") ? "file" : "")
+	if key == "":
+		return ""
+	var rel := str(meta.get(key, ""))
+	rel = rel.replace("\\", "/").lstrip("./")
+	return dir_path.path_join(rel)
+
+static func load_resplan_dir(dir_path: String) -> Array:
+	var manifest := dir_path.path_join("plans_manifest.jsonl")
+	if not FileAccess.file_exists(manifest):
+		push_warning("ResPlan manifest not found: " + manifest)
+		return []
+	var fa := FileAccess.open(manifest, FileAccess.READ)
 	if fa == null:
-		return lines
+		push_warning("ResPlan manifest could not be opened: " + manifest)
+		return []
+	var plans: Array = []
+	var missing := 0
 	while not fa.eof_reached():
 		var line := fa.get_line().strip_edges()
 		if line.is_empty():
 			continue
-		lines.append(line)
+		var meta := JSON.parse_string(line)
+		if typeof(meta) != TYPE_DICTIONARY:
+			continue
+		var plan_path := _manifest_plan_path(dir_path, meta)
+		if plan_path == "" or not FileAccess.file_exists(plan_path):
+			missing += 1
+			continue
+		var plan_file := FileAccess.open(plan_path, FileAccess.READ)
+		if plan_file == null:
+			missing += 1
+			continue
+		var plan_text := plan_file.get_as_text()
+		plan_file.close()
+		var plan := JSON.parse_string(plan_text)
+		if typeof(plan) != TYPE_DICTIONARY:
+			missing += 1
+			continue
+		plans.append({
+			"meta": meta,
+			"plan": plan,
+			"path": plan_path,
+		})
 	fa.close()
-	return lines
-
-static func _resolve_manifest(dir_path: String) -> String:
-	var candidates := [
-		_path_join(dir_path, "manifest.jsonl"),
-		_path_join(dir_path, "manifest.json"),
-		_path_join(dir_path, "manifest.jsonl.txt"),
-	]
-	for p in candidates:
-		if FileAccess.file_exists(p):
-			return p
-	return ""
+	if missing > 0:
+		print("[RESPLAN] skipped missing files: ", missing)
+	print("[RESPLAN] loaded=", plans.size())
+	return plans
 
 static func _pair_key(a: String, b: String) -> String:
 	var aa := a.strip_edges()
@@ -117,55 +148,21 @@ static func _edge_type(rec: Dictionary) -> String:
 	if kind == "":
 		kind = "door"
 	return kind
-static func load_resplan(dir_path: String) -> TrainingData:
+static func load_resplan_as_programs(dir_path: String) -> TrainingData:
 	var data := TrainingData.new()
-	var dir := DirAccess.open(dir_path)
-	if dir == null:
-		push_warning("[RESPLAN] Directory not found: %s" % dir_path)
+	var plans := load_resplan_dir(dir_path)
+	if plans.is_empty():
 		return data
-	var manifest_path := _resolve_manifest(dir_path)
-	if manifest_path == "":
-		push_warning("[RESPLAN] Manifest not found under %s" % dir_path)
-		return data
-	var lines := _load_manifest_lines(manifest_path)
-	if lines.is_empty():
-		push_warning("[RESPLAN] Manifest empty: %s" % manifest_path)
-		return data
-
-	var plan_paths: Array[Dictionary] = []
-	for line in lines:
-		var parsed := JSON.parse_string(line)
-		if typeof(parsed) != TYPE_DICTIONARY:
-			continue
-		var meta: Dictionary = parsed
-		var rel := String(meta.get("file", meta.get("json", "")))
-		if rel == "":
-			continue
-		rel = rel.replace("\\", "/")
-		var plan_path := _path_join(dir_path, rel)
-		if not FileAccess.file_exists(plan_path):
-			continue
-		plan_paths.append({"path": plan_path, "meta": meta})
-
-	if plan_paths.is_empty():
-		push_warning("[RESPLAN] No plan files resolved from manifest")
-		return data
-
-	print("[RESPLAN] loaded=%d manifest=%s" % [plan_paths.size(), manifest_path])
 
 	var type_counts := {}
 	var pair_counts := {}
 	var instances: Array = []
-	for rec in plan_paths:
-		var plan_text := FileAccess.get_file_as_string(rec["path"])
-		if plan_text == "":
-			continue
-		var plan_variant := JSON.parse_string(plan_text)
-		if typeof(plan_variant) != TYPE_DICTIONARY:
-			continue
-		var plan_dict: Dictionary = plan_variant
-		var inst := ProgramInstance.new()
+	for rec in plans:
 		var meta: Dictionary = rec.get("meta", {})
+		var plan_dict: Dictionary = rec.get("plan", {})
+		if plan_dict.is_empty():
+			continue
+		var inst := ProgramInstance.new()
 		inst.total_sqft = float(meta.get("area_m2", meta.get("area", 0.0)))
 		var fp_w := int(meta.get("w", meta.get("width", 0)))
 		var fp_h := int(meta.get("h", meta.get("height", 0)))
@@ -289,6 +286,9 @@ static func load_resplan(dir_path: String) -> TrainingData:
 
 	print("[RESPLAN] raw=%d after_min_type=%d after_min_pair=%d" % [instances.size(), after_type, after_pair])
 	return data
+
+static func load_resplan(dir_path: String) -> TrainingData:
+	return load_resplan_as_programs(dir_path)
 
 ## Create dataset based on real-world architectural programs
 ## Data inspired by "Essential House Plan Collection" by Home Planners (cited in paper)
