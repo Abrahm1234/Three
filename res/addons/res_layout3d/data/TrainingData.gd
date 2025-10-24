@@ -97,9 +97,9 @@ static func _pair_key(a: String, b: String) -> String:
 	return "%s|%s" % [bb, aa]
 
 static func _room_label(entry: Dictionary) -> String:
-	var label := String(entry.get("label", entry.get("type", "")))
+	var label: String = str(entry.get("label", entry.get("type", "")))
 	if label == "" and entry.has("category"):
-		label = String(entry["category"])
+		label = str(entry["category"])
 	return label.capitalize()
 
 static func _room_area(entry: Dictionary) -> float:
@@ -140,7 +140,7 @@ static func _collect_room_map(rooms: Array) -> Dictionary:
 		if typeof(r) != TYPE_DICTIONARY:
 			idx += 1
 			continue
-		var rid := String(r.get("id", r.get("room_id", idx)))
+		var rid: String = str(r.get("id", r.get("room_id", idx)))
 		if rid == "":
 			rid = str(idx)
 		out[rid] = r
@@ -148,7 +148,7 @@ static func _collect_room_map(rooms: Array) -> Dictionary:
 	return out
 
 static func _edge_type(rec: Dictionary) -> String:
-	var kind := String(rec.get("type", rec.get("relation", rec.get("edge_type", "door"))))
+	var kind: String = str(rec.get("type", rec.get("relation", rec.get("edge_type", "door"))))
 	if kind == "":
 		kind = "door"
 	return kind
@@ -188,7 +188,7 @@ static func load_resplan_as_programs(dir_path: String) -> TrainingData:
 			var aspect := _room_aspect(entry)
 			var floor_idx := _room_floor(entry)
 			inst.rooms.append({
-				"id": String(entry.get("id", rid)),
+				"id": str(entry.get("id", rid)),
 				"type": label,
 				"area": area,
 				"aspect": aspect,
@@ -207,13 +207,13 @@ static func load_resplan_as_programs(dir_path: String) -> TrainingData:
 		for edge in adjacencies:
 			if typeof(edge) != TYPE_DICTIONARY:
 				continue
-			var a_id := String(edge.get("a", edge.get("source", edge.get("from", ""))))
-			var b_id := String(edge.get("b", edge.get("target", edge.get("to", ""))))
+			var a_id: String = str(edge.get("a", edge.get("source", edge.get("from", ""))))
+			var b_id: String = str(edge.get("b", edge.get("target", edge.get("to", ""))))
 			if a_id == "" and edge.has("rooms"):
 				var pair: Variant = edge.get("rooms")
 				if typeof(pair) == TYPE_ARRAY and pair.size() >= 2:
-					a_id = String(pair[0])
-					b_id = String(pair[1])
+					a_id = str(pair[0])
+					b_id = str(pair[1])
 			if a_id == "" or b_id == "":
 				continue
 			if not room_map.has(a_id) or not room_map.has(b_id):
@@ -250,26 +250,26 @@ static func load_resplan_as_programs(dir_path: String) -> TrainingData:
 	var allowed_types := {}
 	for label in type_counts.keys():
 		if type_counts[label] >= MIN_TYPE_FREQ:
-			allowed_types[String(label)] = true
+			allowed_types[str(label)] = true
 
 	var allowed_pairs := {}
 	for pk in pair_counts.keys():
 		if pair_counts[pk] >= MIN_PAIR_FREQ:
-			allowed_pairs[String(pk)] = true
+			allowed_pairs[str(pk)] = true
 
 	var after_type := 0
 	var after_pair := 0
 	for inst in instances:
 		var has_type := false
 		for rm in inst.rooms:
-			if allowed_types.has(String(rm.get("type", ""))):
+			if allowed_types.has(str(rm.get("type", ""))):
 				has_type = true
 				break
 		if has_type:
 			after_type += 1
 			var has_pair := false
 			for edge in inst.adjacencies:
-				var pk := _pair_key(String(edge.get("a", "")), String(edge.get("b", "")))
+				var pk := _pair_key(str(edge.get("a", "")), str(edge.get("b", "")))
 				if allowed_pairs.has(pk):
 					has_pair = true
 					break
@@ -278,13 +278,13 @@ static func load_resplan_as_programs(dir_path: String) -> TrainingData:
 
 	var label_list: Array[String] = []
 	for label in allowed_types.keys():
-		label_list.append(String(label))
+		label_list.append(str(label))
 	label_list.sort()
 	data.schema_labels = PackedStringArray(label_list)
 
 	var pair_list: Array[String] = []
 	for pk in allowed_pairs.keys():
-		pair_list.append(String(pk))
+		pair_list.append(str(pk))
 	pair_list.sort()
 	data.schema_adj_pairs = PackedStringArray(pair_list)
 
