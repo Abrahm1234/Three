@@ -70,7 +70,7 @@ static func _room_label(entry: Dictionary) -> String:
 static func _room_area(entry: Dictionary) -> float:
 	var area := float(entry.get("area_m2", entry.get("area", 0.0)))
 	if area <= 0.0 and entry.has("size"):
-		var size := entry["size"]
+		var size: Variant = entry.get("size")
 		if typeof(size) == TYPE_DICTIONARY:
 			var w := float(size.get("w", size.get("width", 0.0)))
 			var h := float(size.get("h", size.get("height", 0.0)))
@@ -81,7 +81,7 @@ static func _room_area(entry: Dictionary) -> float:
 static func _room_aspect(entry: Dictionary) -> float:
 	var aspect := float(entry.get("aspect", entry.get("aspect_ratio", 0.0)))
 	if aspect <= 0.0 and entry.has("size"):
-		var size := entry["size"]
+		var size: Variant = entry.get("size")
 		if typeof(size) == TYPE_DICTIONARY:
 			var w := float(size.get("w", size.get("width", 0.0)))
 			var h := float(size.get("h", size.get("height", 0.0)))
@@ -209,7 +209,7 @@ static func load_resplan(dir_path: String) -> TrainingData:
 			var a_id := String(edge.get("a", edge.get("source", edge.get("from", ""))))
 			var b_id := String(edge.get("b", edge.get("target", edge.get("to", ""))))
 			if a_id == "" and edge.has("rooms"):
-				var pair := edge["rooms"]
+				var pair: Variant = edge.get("rooms")
 				if typeof(pair) == TYPE_ARRAY and pair.size() >= 2:
 					a_id = String(pair[0])
 					b_id = String(pair[1])
