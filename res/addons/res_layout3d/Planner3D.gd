@@ -414,7 +414,13 @@ func _update_adj_list() -> void:
 	adj_list.clear()
 	for e in program.edges:
 		var ed: Dictionary = e
-		adj_list.add_item("%s <-> %s (%s)" % [ed.get("a_id", ""), ed.get("b_id", ""), ed.get("type", "")])
+		adj_list.add_item(
+			"%s <-> %s (%s)" % [
+				ed.get("a_id", ""),
+				ed.get("b_id", ""),
+				ed.get("type", ""),
+			]
+		)
 
 func _seed_state_from_program(prog: ArchitecturalProgram) -> void:
 	if prog == null:
