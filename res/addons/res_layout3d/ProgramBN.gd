@@ -426,10 +426,10 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 	var porch_ids: Array = type_to_ids.get("Porch", [])
 
 
-	var entry_id := entry_ids.size() > 0 ? String(entry_ids[0]) : ""
-	var hall_id := hall_ids.size() > 0 ? String(hall_ids[0]) : ""
-	var living_id := living_ids.size() > 0 ? String(living_ids[0]) : ""
-	var kitchen_id := kitchen_ids.size() > 0 ? String(kitchen_ids[0]) : ""
+	var entry_id := String(entry_ids[0]) if entry_ids.size() > 0 else ""
+	var hall_id := String(hall_ids[0]) if hall_ids.size() > 0 else ""
+	var living_id := String(living_ids[0]) if living_ids.size() > 0 else ""
+	var kitchen_id := String(kitchen_ids[0]) if kitchen_ids.size() > 0 else ""
 
 
 	if entry_id != "" and living_id != "":
@@ -494,7 +494,7 @@ func _sampled_to_program(sampled: Dictionary, req: Dictionary) -> ArchitecturalP
 		_append_edge(edges, edge_cache, kitchen_id, String(laundry_ids[0]), "door")
 
 
-	var study_anchor_ids: Array = office_ids.size() > 0 ? office_ids : study_ids
+	var study_anchor_ids: Array = office_ids if office_ids.size() > 0 else study_ids
 	if entry_id != "" and study_anchor_ids.size() > 0:
 		_append_edge(edges, edge_cache, entry_id, String(study_anchor_ids[0]), "door")
 
