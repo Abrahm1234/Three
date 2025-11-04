@@ -15,6 +15,284 @@ class ProgramInstance:
 var single_story: Array = []
 var two_story: Array = []
 var three_story: Array = []
+var schema_labels: PackedStringArray = PackedStringArray()
+var schema_adj_pairs: PackedStringArray = PackedStringArray()
+
+const MIN_TYPE_FREQ := 25
+const MIN_PAIR_FREQ := 10
+
+func size() -> int:
+	return single_story.size() + two_story.size() + three_story.size()
+
+func is_empty() -> bool:
+	return size() == 0
+
+static func _path_join(base: String, rel: String) -> String:
+	if rel.is_absolute_path():
+		return rel
+	var clean_base := base.rstrip('/')
+	var clean_rel := rel.lstrip('./')
+	return "%s/%s" % [clean_base, clean_rel]
+
+static func _manifest_plan_path(dir_path: String, meta: Dictionary) -> String:
+	var key := ""
+	if meta.has("json"):
+		key = "json"
+	elif meta.has("file"):
+		key = "file"
+	if key == "":
+		return ""
+	var rel := str(meta.get(key, ""))
+	rel = rel.replace("\\", "/").lstrip("./")
+	return dir_path.path_join(rel)
+
+static func load_resplan_dir(dir_path: String) -> Array:
+	var manifest := dir_path.path_join("plans_manifest.jsonl")
+	if not FileAccess.file_exists(manifest):
+		push_warning("ResPlan manifest not found: " + manifest)
+		return []
+	var fa := FileAccess.open(manifest, FileAccess.READ)
+	if fa == null:
+		push_warning("ResPlan manifest could not be opened: " + manifest)
+		return []
+	var plans: Array = []
+	var missing := 0
+	while not fa.eof_reached():
+		var line := fa.get_line().strip_edges()
+		if line.is_empty():
+			continue
+		var meta := JSON.parse_string(line)
+		if typeof(meta) != TYPE_DICTIONARY:
+			continue
+		var plan_path := _manifest_plan_path(dir_path, meta)
+		if plan_path == "" or not FileAccess.file_exists(plan_path):
+			missing += 1
+			continue
+		var plan_file := FileAccess.open(plan_path, FileAccess.READ)
+		if plan_file == null:
+			missing += 1
+			continue
+		var plan_text := plan_file.get_as_text()
+		plan_file.close()
+		var plan := JSON.parse_string(plan_text)
+		if typeof(plan) != TYPE_DICTIONARY:
+			missing += 1
+			continue
+		plans.append({
+			"meta": meta,
+			"plan": plan,
+			"path": plan_path,
+		})
+	fa.close()
+	if missing > 0:
+		print("[RESPLAN] skipped missing files: ", missing)
+	print("[RESPLAN] loaded=", plans.size())
+	return plans
+
+static func _pair_key(a: String, b: String) -> String:
+	var aa := a.strip_edges()
+	var bb := b.strip_edges()
+	if aa <= bb:
+		return "%s|%s" % [aa, bb]
+	return "%s|%s" % [bb, aa]
+
+static func _room_label(entry: Dictionary) -> String:
+	var label: String = str(entry.get("label", entry.get("type", "")))
+	if label == "" and entry.has("category"):
+		label = str(entry["category"])
+	return label.capitalize()
+
+static func _room_area(entry: Dictionary) -> float:
+	var area := float(entry.get("area_m2", entry.get("area", 0.0)))
+	if area <= 0.0 and entry.has("size"):
+		var size: Variant = entry.get("size")
+		if typeof(size) == TYPE_DICTIONARY:
+			var w := float(size.get("w", size.get("width", 0.0)))
+			var h := float(size.get("h", size.get("height", 0.0)))
+			if w > 0.0 and h > 0.0:
+				area = w * h
+	return area
+
+static func _room_aspect(entry: Dictionary) -> float:
+	var aspect := float(entry.get("aspect", entry.get("aspect_ratio", 0.0)))
+	if aspect <= 0.0 and entry.has("size"):
+		var size: Variant = entry.get("size")
+		if typeof(size) == TYPE_DICTIONARY:
+			var w := float(size.get("w", size.get("width", 0.0)))
+			var h := float(size.get("h", size.get("height", 0.0)))
+			if w > 0.0 and h > 0.0:
+				aspect = max(w, h) / max(0.001, min(w, h))
+	if aspect <= 0.0:
+		aspect = 1.0
+	return aspect
+
+static func _room_floor(entry: Dictionary, fallback: int = 0) -> int:
+	if entry.has("floor"):
+		return int(entry["floor"])
+	if entry.has("level"):
+		return int(entry["level"])
+	return fallback
+
+static func _collect_room_map(rooms: Array) -> Dictionary:
+	var out := {}
+	var idx := 0
+	for r in rooms:
+		if typeof(r) != TYPE_DICTIONARY:
+			idx += 1
+			continue
+		var rid: String = str(r.get("id", r.get("room_id", idx)))
+		if rid == "":
+			rid = str(idx)
+		out[rid] = r
+		idx += 1
+	return out
+
+static func _edge_type(rec: Dictionary) -> String:
+	var kind: String = str(rec.get("type", rec.get("relation", rec.get("edge_type", "door"))))
+	if kind == "":
+		kind = "door"
+	return kind
+static func load_resplan_as_programs(dir_path: String) -> TrainingData:
+	var data := TrainingData.new()
+	var plans := load_resplan_dir(dir_path)
+	if plans.is_empty():
+		return data
+
+	var type_counts := {}
+	var pair_counts := {}
+	var instances: Array = []
+	for rec in plans:
+		var meta: Dictionary = rec.get("meta", {})
+		var plan_dict: Dictionary = rec.get("plan", {})
+		if plan_dict.is_empty():
+			continue
+		var inst := ProgramInstance.new()
+		inst.total_sqft = float(meta.get("area_m2", meta.get("area", 0.0)))
+		var fp_w := int(meta.get("w", meta.get("width", 0)))
+		var fp_h := int(meta.get("h", meta.get("height", 0)))
+		inst.footprint = Vector2i(fp_w, fp_h)
+		inst.floors = int(meta.get("floors", plan_dict.get("floors", 1)))
+		inst.bedrooms = 0
+		inst.bathrooms = 0
+
+		var rooms_array := plan_dict.get("rooms", plan_dict.get("room_list", []))
+		if typeof(rooms_array) != TYPE_ARRAY:
+			rooms_array = []
+		var room_map := _collect_room_map(rooms_array)
+		for rid in room_map.keys():
+			var entry: Dictionary = room_map[rid]
+			var label := _room_label(entry)
+			if label == "":
+				continue
+			var area := _room_area(entry)
+			var aspect := _room_aspect(entry)
+			var floor_idx := _room_floor(entry)
+			inst.rooms.append({
+				"id": str(entry.get("id", rid)),
+				"type": label,
+				"area": area,
+				"aspect": aspect,
+				"floor": floor_idx,
+			})
+			var lower := label.to_lower()
+			if lower.begins_with("bed"):
+				inst.bedrooms += 1
+			elif lower.begins_with("bath"):
+				inst.bathrooms += 1
+			type_counts[label] = type_counts.get(label, 0) + 1
+
+		var adjacencies := plan_dict.get("adjacency", plan_dict.get("edges", plan_dict.get("connections", [])))
+		if typeof(adjacencies) != TYPE_ARRAY:
+			adjacencies = []
+		for edge in adjacencies:
+			if typeof(edge) != TYPE_DICTIONARY:
+				continue
+			var a_id: String = str(edge.get("a", edge.get("source", edge.get("from", ""))))
+			var b_id: String = str(edge.get("b", edge.get("target", edge.get("to", ""))))
+			if a_id == "" and edge.has("rooms"):
+				var pair: Variant = edge.get("rooms")
+				if typeof(pair) == TYPE_ARRAY and pair.size() >= 2:
+					a_id = str(pair[0])
+					b_id = str(pair[1])
+			if a_id == "" or b_id == "":
+				continue
+			if not room_map.has(a_id) or not room_map.has(b_id):
+				continue
+			var a_label := _room_label(room_map[a_id])
+			var b_label := _room_label(room_map[b_id])
+			if a_label == "" or b_label == "":
+				continue
+			var edge_type := _edge_type(edge)
+			inst.adjacencies.append({
+				"a": a_label,
+				"b": b_label,
+				"type": edge_type,
+			})
+			var pk := _pair_key(a_label, b_label)
+			pair_counts[pk] = pair_counts.get(pk, 0) + 1
+
+		if inst.rooms.is_empty():
+			continue
+		if inst.total_sqft <= 0.0:
+			for rm in inst.rooms:
+				inst.total_sqft += float(rm.get("area", 0.0))
+		instances.append(inst)
+		match inst.floors:
+			1:
+				data.single_story.append(inst)
+			2:
+				data.two_story.append(inst)
+			3:
+				data.three_story.append(inst)
+			_:
+				data.single_story.append(inst)
+
+	var allowed_types := {}
+	for label in type_counts.keys():
+		if type_counts[label] >= MIN_TYPE_FREQ:
+			allowed_types[str(label)] = true
+
+	var allowed_pairs := {}
+	for pk in pair_counts.keys():
+		if pair_counts[pk] >= MIN_PAIR_FREQ:
+			allowed_pairs[str(pk)] = true
+
+	var after_type := 0
+	var after_pair := 0
+	for inst in instances:
+		var has_type := false
+		for rm in inst.rooms:
+			if allowed_types.has(str(rm.get("type", ""))):
+				has_type = true
+				break
+		if has_type:
+			after_type += 1
+			var has_pair := false
+			for edge in inst.adjacencies:
+				var pk := _pair_key(str(edge.get("a", "")), str(edge.get("b", "")))
+				if allowed_pairs.has(pk):
+					has_pair = true
+					break
+			if has_pair:
+				after_pair += 1
+
+	var label_list: Array[String] = []
+	for label in allowed_types.keys():
+		label_list.append(str(label))
+	label_list.sort()
+	data.schema_labels = PackedStringArray(label_list)
+
+	var pair_list: Array[String] = []
+	for pk in allowed_pairs.keys():
+		pair_list.append(str(pk))
+	pair_list.sort()
+	data.schema_adj_pairs = PackedStringArray(pair_list)
+
+	print("[RESPLAN] raw=%d after_min_type=%d after_min_pair=%d" % [instances.size(), after_type, after_pair])
+	return data
+
+static func load_resplan(dir_path: String) -> TrainingData:
+	return load_resplan_as_programs(dir_path)
 
 ## Create dataset based on real-world architectural programs
 ## Data inspired by "Essential House Plan Collection" by Home Planners (cited in paper)

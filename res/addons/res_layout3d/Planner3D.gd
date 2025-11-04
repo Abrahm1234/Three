@@ -2,7 +2,10 @@ extends Node3D
 
 const EPS := 1e-4
 
+const USE_RESPLAN := true
 const GeomUtils := preload("res://addons/res_layout3d/GeomUtils.gd")
+const ProgramBN := preload("res://addons/res_layout3d/ProgramBN.gd")
+const RESPLAN_DIR := "res://addons/res_layout3d/data/datasets/resplan"
 
 func _edge_key(axis: String, c: float) -> String:
 	return "%s@%.5f" % [axis, c]
@@ -288,10 +291,38 @@ func _ready() -> void:
 	add_child(bn)
 	
 	var TrainingDataClass = load("res://addons/res_layout3d/data/TrainingData.gd")
-	var training_data = TrainingDataClass.create_default()
-	if bn and bn.has_method("train"):
+	var training_data: TrainingData = null
+	if TrainingDataClass:
+		var manifest_path := RESPLAN_DIR.path_join("plans_manifest.jsonl")
+		print("[CHK] manifest exists=", FileAccess.file_exists(manifest_path))
+		if TrainingDataClass.has_method("_manifest_plan_path"):
+			var first_json_path: Variant = TrainingDataClass.call("_manifest_plan_path", RESPLAN_DIR, {"json": "export_json/plan_00000.json"})
+			var first_path_str := String(first_json_path)
+			print("[CHK] first json path=", first_path_str)
+			print("[CHK] first exists=", FileAccess.file_exists(first_path_str))
+		var corpus: TrainingData = null
+		if USE_RESPLAN:
+			if TrainingDataClass.has_method("load_resplan_as_programs"):
+				corpus = TrainingDataClass.call("load_resplan_as_programs", RESPLAN_DIR)
+			elif TrainingDataClass.has_method("load_resplan"):
+				corpus = TrainingDataClass.call("load_resplan", RESPLAN_DIR)
+		if corpus and corpus.has_method("is_empty") and not corpus.is_empty():
+			training_data = corpus
+			print("[RESPLAN] loaded=", corpus.size())
+		elif USE_RESPLAN:
+			print("⚠️ Using built-in synthetic training data (empty corpus at ", RESPLAN_DIR, ")")
+		if training_data == null and TrainingDataClass.has_method("create_default"):
+			training_data = TrainingDataClass.create_default()
+	if training_data == null:
+		training_data = TrainingData.create_default()
+	if bn and bn.has_method("train") and training_data:
 		bn.train(training_data, 1)
-		print("✓ Bayesian Network trained with %d instances" % training_data.single_story.size())
+		var trained_count: int
+		if training_data.has_method("size"):
+			trained_count = int(training_data.size())
+		else:
+			trained_count = int(training_data.single_story.size())
+		print("✓ Bayesian Network trained with %d instances" % trained_count)
 	
 	w_access.value_changed.connect(func(_v): _apply_weights())
 	w_dims.value_changed.connect(func(_v): _apply_weights())
@@ -328,7 +359,6 @@ func _ready() -> void:
 		cost_tree.set_column_title(0, "Term")
 		cost_tree.set_column_title(1, "Value")
 	plan_cost = PlanCost.new()
-	add_child(plan_cost)
 	if styles.size() > 0:
 		style_idx = 0
 		style = styles[0]
@@ -414,7 +444,13 @@ func _update_adj_list() -> void:
 	adj_list.clear()
 	for e in program.edges:
 		var ed: Dictionary = e
-		adj_list.add_item("%s <-> %s (%s)" % [ed.get("a_id", ""), ed.get("b_id", ""), ed.get("type", "")])
+		adj_list.add_item(
+			"%s <-> %s (%s)" % [
+				ed.get("a_id", ""),
+				ed.get("b_id", ""),
+				ed.get("type", ""),
+			]
+		)
 
 func _seed_state_from_program(prog: ArchitecturalProgram) -> void:
 	if prog == null:
@@ -680,7 +716,7 @@ func _metrics_for(part: Partition) -> Dictionary:
 	var shape := plan_cost.C_shape(part)
 	var exposure := plan_cost.C_exposure(part, terms)
 	var overlap := plan_cost.C_overlap(part)
-	var total := plan_cost.total(part, entry_idx, terms)
+	var total: float = plan_cost.total(part, entry_idx, terms)
 	return {
 		"access": access,
 		"dims": dims,
